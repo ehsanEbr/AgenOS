@@ -4,5 +4,8 @@ import { defineConfig } from 'vitest/config';
 // SWC is required so NestJS decorator metadata (constructor injection) is emitted under Vitest.
 export default defineConfig({
   plugins: [swc.vite({ module: { type: 'es6' } })],
-  test: { include: ['src/**/*.spec.ts'] },
+  test: {
+    include: ['src/**/*.spec.ts', 'test/**/*.spec.ts'],
+    env: { NODE_ENV: 'test', LOG_LEVEL: 'silent' },
+  },
 });

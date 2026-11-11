@@ -12,7 +12,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const req = http.getRequest<CorrelatedRequest>();
     const res = http.getResponse<Response>();
 
-    const correlationId = getCorrelationId(req);
+    const correlationId = getCorrelationId(req) ?? 'unknown';
     const { status, body } = toApiError(exception, correlationId);
 
     if (status >= 500) {

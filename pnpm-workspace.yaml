@@ -1,15 +1,10 @@
 packages:
   - apps/*
   - packages/*
-  - database
 
 # pnpm blocks dependency install scripts by default; allow only what the build needs.
 allowBuilds:
-  '@prisma/client': true
-  '@prisma/engines': true
-  prisma: true
-  '@swc/core': true
-  esbuild: true
+  '@swc/core': true # Vitest decorator-metadata transform for the NestJS API tests
+  esbuild: true # tsup and Vite
   nx: true
   '@scarf/scarf': false # telemetry only
-  msgpackr-extract: false # optional native speedup for bullmq

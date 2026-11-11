@@ -1,13 +1,11 @@
 import { Module } from '@nestjs/common';
+import { APP_FILTER, APP_PIPE } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
-import type { ApiConfig } from '@agentos/config';
-import { buildLoggerOptions } from '@agentos/logger';
-import { getCorrelationId } from './common/correlation-id.middleware';
-import { ConfigModule, APP_CONFIG } from './modules/config/config.module';
-import { DatabaseModule } from './modules/database/database.module';
-import { HealthModule } from './modules/health/health.module';
-import { RedisModule } from './modules/redis/redis.module';
-import { SystemJobsModule } from './modules/system-jobs/system-jobs.module';
+import { AllExceptionsFilter } from './common/all-exceptions.filter';
+import { buildPinoHttpOptions } from './common/logging';
+import { ZodValidationPipe } from './common/zod-validation.pipe';
+import { APP_CONFIG, ConfigModule, type ApiConfig } from './modules/config';
+import { HealthModule } from './modules/health';
 
 @Module({
   imports: [
@@ -17,23 +15,14 @@ import { SystemJobsModule } from './modules/system-jobs/system-jobs.module';
       useFactory: (config: ApiConfig) => ({
         // Express 5 (Nest 11) requires named wildcards; the default '*' triggers a deprecation warning.
         forRoutes: ['{*splat}'],
-        pinoHttp: {
-          ...buildLoggerOptions({
-            service: 'api',
-            level: config.LOG_LEVEL,
-            pretty: config.NODE_ENV === 'development',
-          }),
-          genReqId: (req) => getCorrelationId(req),
-          customProps: (req) => ({ correlationId: getCorrelationId(req) }),
-          // Probes are noisy; request logs for them add no value.
-          autoLogging: { ignore: (req) => req.url?.includes('/health/') ?? false },
-        },
+        pinoHttp: buildPinoHttpOptions(config),
       }),
     }),
-    DatabaseModule,
-    RedisModule,
     HealthModule,
-    SystemJobsModule,
+  ],
+  providers: [
+    { provide: APP_PIPE, useClass: ZodValidationPipe },
+    { provide: APP_FILTER, useClass: AllExceptionsFilter },
   ],
 })
 export class AppModule {}

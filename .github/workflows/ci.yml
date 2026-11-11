@@ -12,33 +12,8 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    services:
-      postgres:
-        image: pgvector/pgvector:pg17
-        env:
-          POSTGRES_USER: agentos
-          POSTGRES_PASSWORD: agentos
-          POSTGRES_DB: agentos
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U agentos -d agentos"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-      redis:
-        image: redis:7-alpine
-        ports: ['6379:6379']
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
+    timeout-minutes: 15
     env:
-      DATABASE_URL: postgresql://agentos:agentos@localhost:5432/agentos?schema=public
-      REDIS_URL: redis://localhost:6379
       NX_NO_CLOUD: 'true'
 
     steps:
@@ -53,26 +28,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Prepare environment file
-        run: cp .env.example .env
-
-      - name: Apply database migrations
-        run: pnpm db:deploy
-
-      - name: Format
-        run: pnpm format:check
-
-      - name: Lint (includes module boundary rules)
-        run: pnpm lint
-
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Unit tests
-        run: pnpm test
-
-      - name: Build
-        run: pnpm build
-
-      - name: Integration tests (PostgreSQL + Redis)
-        run: pnpm test:integration
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build

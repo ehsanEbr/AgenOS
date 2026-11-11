@@ -1,12 +1,38 @@
-import { BadRequestException, PipeTransform } from '@nestjs/common';
+import { ArgumentMetadata, BadRequestException, PipeTransform } from '@nestjs/common';
 import type { z } from 'zod';
 
-/** Validates input against a shared contract schema and returns the parsed (typed) value. */
-export class ZodValidationPipe<T extends z.ZodType> implements PipeTransform<unknown, z.output<T>> {
-  constructor(private readonly schema: T) {}
+/** A class that carries a Zod schema; use as the declared type of `@Body()`, `@Query()` or `@Param()`. */
+export interface ZodDto<T extends z.ZodType = z.ZodType> {
+  new (): z.output<T>;
+  readonly schema: T;
+}
 
-  transform(value: unknown): z.output<T> {
-    const result = this.schema.safeParse(value);
+/**
+ * Creates a DTO class from a shared contract schema, so the global pipe validates it:
+ *
+ *   class CreateThingDto extends createZodDto(createThingRequestSchema) {}
+ *   create(@Body() body: CreateThingDto) {}
+ */
+export function createZodDto<T extends z.ZodType>(schema: T): ZodDto<T> {
+  class SchemaDto {
+    static readonly schema = schema;
+  }
+  return SchemaDto as unknown as ZodDto<T>;
+}
+
+function isZodDto(value: unknown): value is ZodDto {
+  return typeof value === 'function' && 'schema' in value;
+}
+
+/**
+ * Global validation pipe (registered via APP_PIPE). Parameters typed with a ZodDto are validated
+ * and replaced by the parsed value; everything else passes through unchanged.
+ */
+export class ZodValidationPipe implements PipeTransform {
+  transform(value: unknown, metadata: ArgumentMetadata): unknown {
+    if (!isZodDto(metadata.metatype)) return value;
+
+    const result = metadata.metatype.schema.safeParse(value);
     if (!result.success) {
       throw new BadRequestException({
         code: 'validation_error',

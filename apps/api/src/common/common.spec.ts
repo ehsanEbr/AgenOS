@@ -1,11 +1,10 @@
 import { BadRequestException, HttpException, NotFoundException } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import { describe, expect, it, vi } from 'vitest';
-import { createSystemJobRequestSchema } from '@agentos/contracts';
+import { z } from 'zod';
 import { toApiError } from './api-error';
 import { type CorrelatedRequest, correlationIdMiddleware } from './correlation-id.middleware';
-import { withTimeout } from './with-timeout';
-import { ZodValidationPipe } from './zod-validation.pipe';
+import { ZodValidationPipe, createZodDto } from './zod-validation.pipe';
 
 function runMiddleware(header?: string) {
   const req = { headers: header === undefined ? {} : { 'x-correlation-id': header } } as unknown as Request;
@@ -28,24 +27,22 @@ describe('correlationIdMiddleware', () => {
   });
 
   it('replaces malformed ids (log injection guard)', () => {
-    const { id } = runMiddleware('bad id\nwith newline');
-    expect(id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(runMiddleware('bad id\nwith newline').id).toMatch(/^[0-9a-f-]{36}$/);
   });
 });
 
 describe('toApiError', () => {
   it('maps HttpExceptions with structured bodies', () => {
     const { status, body } = toApiError(
-      new NotFoundException({ code: 'job_not_found', message: 'nope' }),
+      new NotFoundException({ code: 'thing_missing', message: 'nope' }),
       'cid',
     );
     expect(status).toBe(404);
-    expect(body).toEqual({ code: 'job_not_found', message: 'nope', correlationId: 'cid' });
+    expect(body).toEqual({ code: 'thing_missing', message: 'nope', correlationId: 'cid' });
   });
 
   it('falls back to a status-derived code', () => {
-    const { body } = toApiError(new HttpException('teapot', 418), 'cid');
-    expect(body.code).toBe('http_418');
+    expect(toApiError(new HttpException('teapot', 418), 'cid').body.code).toBe('http_418');
     expect(toApiError(new NotFoundException(), 'cid').body.code).toBe('not_found');
   });
 
@@ -57,15 +54,17 @@ describe('toApiError', () => {
 });
 
 describe('ZodValidationPipe', () => {
-  const pipe = new ZodValidationPipe(createSystemJobRequestSchema);
+  class Dto extends createZodDto(z.object({ message: z.string().trim().min(1) })) {}
+  const pipe = new ZodValidationPipe();
+  const meta = { type: 'body' as const, metatype: Dto };
 
-  it('returns parsed data', () => {
-    expect(pipe.transform({ message: ' hello ' })).toEqual({ message: 'hello' });
+  it('returns parsed data for DTO-typed parameters', () => {
+    expect(pipe.transform({ message: ' hello ' }, meta)).toEqual({ message: 'hello' });
   });
 
   it('throws a structured validation error', () => {
     try {
-      pipe.transform({ message: '' });
+      pipe.transform({ message: '' }, meta);
       expect.unreachable();
     } catch (e) {
       expect(e).toBeInstanceOf(BadRequestException);
@@ -74,14 +73,9 @@ describe('ZodValidationPipe', () => {
       expect(response.details).toHaveLength(1);
     }
   });
-});
 
-describe('withTimeout', () => {
-  it('resolves when the promise settles in time', async () => {
-    await expect(withTimeout(Promise.resolve(1), 100, 'x')).resolves.toBe(1);
-  });
-
-  it('rejects when the promise is too slow', async () => {
-    await expect(withTimeout(new Promise(() => undefined), 10, 'slow')).rejects.toThrow('slow timed out');
+  it('passes through parameters without a DTO type', () => {
+    expect(pipe.transform('raw', { type: 'param', metatype: String })).toBe('raw');
+    expect(pipe.transform('raw', { type: 'param' })).toBe('raw');
   });
 });

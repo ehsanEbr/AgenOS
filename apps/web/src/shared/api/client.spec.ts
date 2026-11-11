@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiClientError, api } from './client';
+import { ApiClientError, api, apiRequest } from './client';
+import { z } from 'zod';
 
 function mockFetch(status: number, body: unknown) {
   const fn = vi
@@ -14,50 +15,39 @@ function mockFetch(status: number, body: unknown) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('api client', () => {
-  it('treats a 503 readiness response as data', async () => {
-    mockFetch(503, { status: 'degraded', checks: { database: { status: 'down' }, redis: { status: 'up' } } });
-    const result = await api.getReadiness();
-    expect(result.status).toBe('degraded');
+  it('returns validated data from the shared contract', async () => {
+    const fn = mockFetch(200, { status: 'ok', service: 'api', uptimeSeconds: 3 });
+    await expect(api.getHealth()).resolves.toEqual({ status: 'ok', service: 'api', uptimeSeconds: 3 });
+    expect(fn.mock.calls[0]?.[0]).toBe('/api/v1/health');
   });
 
   it('maps the standard API error format to ApiClientError', async () => {
-    mockFetch(404, { code: 'job_not_found', message: 'missing', correlationId: 'cid-1' });
-    await expect(api.getSystemJob('7c9e6679-7425-40de-944b-e07fc1f90ae7')).rejects.toMatchObject({
+    mockFetch(404, { code: 'thing_missing', message: 'missing', correlationId: 'cid-1' });
+    await expect(api.getHealth()).rejects.toMatchObject({
       name: 'ApiClientError',
       status: 404,
-      code: 'job_not_found',
+      code: 'thing_missing',
       correlationId: 'cid-1',
     });
   });
 
   it('rejects responses that violate the contract', async () => {
     mockFetch(200, { status: 'weird' });
-    await expect(api.getReadiness()).rejects.toMatchObject({ code: 'invalid_response' });
+    await expect(api.getHealth()).rejects.toMatchObject({ code: 'invalid_response' });
   });
 
   it('reports network failures as ApiClientError', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
-    const error = await api.getReadiness().catch((e: unknown) => e);
+    const error = await api.getHealth().catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ApiClientError);
     expect((error as ApiClientError).code).toBe('network_error');
   });
 
-  it('sends JSON bodies when creating a job', async () => {
-    const fn = mockFetch(202, {
-      id: '7c9e6679-7425-40de-944b-e07fc1f90ae7',
-      status: 'QUEUED',
-      message: 'hi',
-      output: null,
-      error: null,
-      attempts: 0,
-      createdAt: '2026-01-01T00:00:00.000Z',
-      startedAt: null,
-      completedAt: null,
-    });
-    await api.createSystemJob({ message: 'hi' });
-    const [url, init] = fn.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/api/v1/system/jobs');
+  it('sends JSON bodies', async () => {
+    const fn = mockFetch(200, { ok: true });
+    await apiRequest('/things', z.object({ ok: z.boolean() }), { method: 'POST', body: { name: 'x' } });
+    const [, init] = fn.mock.calls[0] as [string, RequestInit];
     expect(init.method).toBe('POST');
-    expect(init.body).toBe('{"message":"hi"}');
+    expect(init.body).toBe('{"name":"x"}');
   });
 });

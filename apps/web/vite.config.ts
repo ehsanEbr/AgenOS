@@ -1,7 +1,7 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vitest/config';
 
-const apiTarget = process.env.VITE_DEV_API_TARGET ?? 'http://localhost:3000';
+const apiTarget = process.env.VITE_DEV_API_TARGET ?? 'http://127.0.0.1:3000';
 
 export default defineConfig({
   plugins: [react()],

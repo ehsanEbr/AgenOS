@@ -1,5 +1,5 @@
 import { Global, Module } from '@nestjs/common';
-import { loadApiConfig } from '@agentos/config';
+import { loadApiConfig } from './config';
 
 /** DI token for the validated API configuration. */
 export const APP_CONFIG = Symbol('APP_CONFIG');

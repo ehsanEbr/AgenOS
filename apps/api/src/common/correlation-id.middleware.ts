@@ -19,6 +19,6 @@ export function correlationIdMiddleware(req: Request, res: Response, next: NextF
   next();
 }
 
-export function getCorrelationId(req: IncomingMessage | Request): string {
-  return (req as Partial<CorrelatedRequest>).correlationId ?? 'unknown';
+export function getCorrelationId(req: IncomingMessage | Request): string | undefined {
+  return (req as Partial<CorrelatedRequest>).correlationId;
 }

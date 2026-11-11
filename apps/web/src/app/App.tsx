@@ -2,7 +2,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ConfigProvider } from 'antd';
 import { useState } from 'react';
 import { createBrowserRouter, RouterProvider } from 'react-router-dom';
-import { AuthBoundary } from '../auth/AuthBoundary';
 import { ApiClientError } from '../shared/api/client';
 import { ErrorBoundary } from '../shared/ui/ErrorBoundary';
 import { routes } from './router';
@@ -29,9 +28,7 @@ export function App() {
     <ErrorBoundary>
       <ConfigProvider>
         <QueryClientProvider client={queryClient}>
-          <AuthBoundary>
-            <RouterProvider router={router} />
-          </AuthBoundary>
+          <RouterProvider router={router} />
         </QueryClientProvider>
       </ConfigProvider>
     </ErrorBoundary>

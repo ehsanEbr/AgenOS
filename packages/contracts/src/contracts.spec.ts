@@ -1,35 +1,32 @@
 import { describe, expect, it } from 'vitest';
 import {
-  QUEUE_NAMES,
-  createSystemJobRequestSchema,
-  readinessResponseSchema,
-  systemJobQueuePayloadSchema,
+  CORRELATION_ID_HEADER,
+  apiErrorSchema,
+  healthResponseSchema,
+  idSchema,
+  isoDateTimeSchema,
 } from './index';
 
 describe('contracts', () => {
-  it('trims and validates system job requests', () => {
-    expect(createSystemJobRequestSchema.parse({ message: '  hi  ' })).toEqual({ message: 'hi' });
-    expect(createSystemJobRequestSchema.safeParse({ message: '   ' }).success).toBe(false);
-    expect(createSystemJobRequestSchema.safeParse({ message: 'x'.repeat(201) }).success).toBe(false);
+  it('validates identifiers and timestamps', () => {
+    expect(idSchema.safeParse(crypto.randomUUID()).success).toBe(true);
+    expect(idSchema.safeParse('not-a-uuid').success).toBe(false);
+    expect(isoDateTimeSchema.safeParse(new Date().toISOString()).success).toBe(true);
+    expect(isoDateTimeSchema.safeParse('yesterday').success).toBe(false);
   });
 
-  it('requires a uuid job id in the queue payload', () => {
-    expect(systemJobQueuePayloadSchema.safeParse({ jobId: 'nope', correlationId: 'c' }).success).toBe(false);
-    expect(
-      systemJobQueuePayloadSchema.safeParse({ jobId: crypto.randomUUID(), correlationId: 'c' }).success,
-    ).toBe(true);
+  it('requires a correlation id in error bodies', () => {
+    expect(apiErrorSchema.safeParse({ code: 'x', message: 'y', correlationId: 'c' }).success).toBe(true);
+    expect(apiErrorSchema.safeParse({ code: 'x', message: 'y' }).success).toBe(false);
   });
 
-  it('parses readiness responses', () => {
-    const parsed = readinessResponseSchema.parse({
-      status: 'degraded',
-      checks: { database: { status: 'down', error: 'timeout' }, redis: { status: 'up', latencyMs: 2 } },
-    });
-    expect(parsed.checks.database?.status).toBe('down');
+  it('parses the health response', () => {
+    const body = { status: 'ok', service: 'api', uptimeSeconds: 1.5 };
+    expect(healthResponseSchema.parse(body)).toEqual(body);
+    expect(healthResponseSchema.safeParse({ ...body, status: 'down' }).success).toBe(false);
   });
 
-  it('keeps queue names unique', () => {
-    const names = Object.values(QUEUE_NAMES);
-    expect(new Set(names).size).toBe(names.length);
+  it('exposes a lowercase correlation header name', () => {
+    expect(CORRELATION_ID_HEADER).toBe('x-correlation-id');
   });
 });
