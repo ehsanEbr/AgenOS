@@ -1,0 +1,37 @@
+{
+  "name": "agentos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AgentOS - platform for designing, running and observing AI agent systems",
+  "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "nx run-many -t build",
+    "lint": "nx run-many -t lint",
+    "typecheck": "nx run-many -t typecheck",
+    "test": "nx run-many -t test",
+    "test:integration": "nx run-many -t test:integration",
+    "verify": "nx run-many -t lint typecheck test build",
+    "dev": "nx run-many -t dev --parallel=4",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "infra:up": "docker compose -f infrastructure/compose/docker-compose.yml up -d --wait",
+    "infra:down": "docker compose -f infrastructure/compose/docker-compose.yml down",
+    "infra:reset": "docker compose -f infrastructure/compose/docker-compose.yml down -v",
+    "db:generate": "pnpm --filter @agentos/database generate",
+    "db:migrate": "pnpm --filter @agentos/database migrate:dev",
+    "db:deploy": "pnpm --filter @agentos/database migrate:deploy"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.30.0",
+    "@nx/eslint-plugin": "^21.2.0",
+    "eslint": "^9.30.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "nx": "^21.2.0",
+    "prettier": "^3.6.0",
+    "typescript": "~5.8.3",
+    "typescript-eslint": "^8.35.0"
+  }
+}
