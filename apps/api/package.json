@@ -3,18 +3,54 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build": "nest build",
     "dev": "nest start --watch --exec \"node --env-file-if-exists=../../.env\"",
+    "build": "nest build",
     "start": "node --env-file-if-exists=../../.env dist/main.js",
+    "generate": "prisma generate",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "db:validate": "prisma validate",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:status": "prisma migrate status"
   },
   "nx": {
     "tags": [
       "type:app",
       "scope:backend"
-    ]
+    ],
+    "targets": {
+      "generate": {
+        "cache": false
+      },
+      "build": {
+        "dependsOn": [
+          "^build",
+          "generate"
+        ]
+      },
+      "typecheck": {
+        "dependsOn": [
+          "^build",
+          "generate"
+        ]
+      },
+      "test": {
+        "dependsOn": [
+          "^build",
+          "generate"
+        ]
+      },
+      "test:integration": {
+        "dependsOn": [
+          "^build",
+          "generate"
+        ],
+        "cache": false
+      }
+    }
   },
   "dependencies": {
     "@agentos/contracts": "workspace:*",
@@ -22,6 +58,8 @@
     "@nestjs/core": "^11.1.0",
     "@nestjs/platform-express": "^11.1.0",
     "@nestjs/swagger": "^11.2.0",
+    "@prisma/client": "6.19.3",
+    "ioredis": "5.10.1",
     "nestjs-pino": "^4.4.0",
     "pino": "^9.7.0",
     "pino-http": "^10.5.0",
@@ -37,6 +75,7 @@
     "@types/node": "^22.15.0",
     "@types/supertest": "^6.0.0",
     "pino-pretty": "^13.0.0",
+    "prisma": "6.19.3",
     "supertest": "^7.1.0",
     "typescript": "~5.8.3",
     "unplugin-swc": "^1.5.0",

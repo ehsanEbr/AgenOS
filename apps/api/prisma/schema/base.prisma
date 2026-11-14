@@ -1,0 +1,16 @@
+// AgentOS database schema - shared configuration.
+//
+// This is a multi-file Prisma schema: every `*.prisma` file in this folder is part of the schema.
+// Keep ONLY the generator and datasource here. Each domain adds its own file when its phase starts
+// (for example `identity.prisma`, `agents.prisma`), so domains stay independently reviewable.
+//
+// Phase 1.2 intentionally defines no models: business entities belong to their domain phases.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}

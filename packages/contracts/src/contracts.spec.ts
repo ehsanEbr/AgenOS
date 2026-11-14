@@ -5,6 +5,7 @@ import {
   healthResponseSchema,
   idSchema,
   isoDateTimeSchema,
+  readinessResponseSchema,
 } from './index';
 
 describe('contracts', () => {
@@ -20,7 +21,7 @@ describe('contracts', () => {
     expect(apiErrorSchema.safeParse({ code: 'x', message: 'y' }).success).toBe(false);
   });
 
-  it('parses the health response', () => {
+  it('parses the liveness response', () => {
     const body = { status: 'ok', service: 'api', uptimeSeconds: 1.5 };
     expect(healthResponseSchema.parse(body)).toEqual(body);
     expect(healthResponseSchema.safeParse({ ...body, status: 'down' }).success).toBe(false);
@@ -28,5 +29,38 @@ describe('contracts', () => {
 
   it('exposes a lowercase correlation header name', () => {
     expect(CORRELATION_ID_HEADER).toBe('x-correlation-id');
+  });
+});
+
+describe('readiness contract', () => {
+  const up = { status: 'up', latencyMs: 3 };
+
+  it('accepts ready and not_ready bodies', () => {
+    expect(
+      readinessResponseSchema.safeParse({ status: 'ready', checks: { postgres: up, redis: up } }).success,
+    ).toBe(true);
+    expect(
+      readinessResponseSchema.safeParse({
+        status: 'not_ready',
+        checks: { postgres: { status: 'down', reason: 'timeout' }, redis: up },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('restricts failure reasons to a fixed vocabulary (no free-form error text)', () => {
+    const leaky = {
+      status: 'not_ready',
+      checks: {
+        postgres: { status: 'down', reason: 'password authentication failed for user "agentos"' },
+        redis: up,
+      },
+    };
+    expect(readinessResponseSchema.safeParse(leaky).success).toBe(false);
+  });
+
+  it('requires both dependencies to be reported', () => {
+    expect(readinessResponseSchema.safeParse({ status: 'ready', checks: { postgres: up } }).success).toBe(
+      false,
+    );
   });
 });

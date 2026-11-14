@@ -22,12 +22,16 @@ export const apiEnvSchema = z.object({
         .map((s) => s.trim())
         .filter(Boolean),
     ),
+  /** PostgreSQL connection string, including credentials. Required: PostgreSQL is the source of truth. */
+  DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
+  /** Redis connection string (redis:// or rediss://), including credentials. Required. */
+  REDIS_URL: z.url({ protocol: /^rediss?$/ }),
 });
 export type ApiConfig = z.infer<typeof apiEnvSchema>;
 
 /**
  * Validates environment variables. Error messages name the offending variables but never
- * echo their values, which may be secrets in later phases.
+ * echo their values: DATABASE_URL and REDIS_URL contain credentials.
  */
 export function loadApiConfig(env: Record<string, string | undefined> = process.env): ApiConfig {
   const result = apiEnvSchema.safeParse(env);

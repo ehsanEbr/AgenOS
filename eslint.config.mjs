@@ -47,6 +47,23 @@ const MODULE_INTERNALS_FROM_OUTSIDE = { group: ['**/modules/*/*'], message: MODU
 // From inside a module: "../<sibling>/<file>" (but not "../../common/...", which starts with "../..").
 const MODULE_INTERNALS_FROM_SIBLING = { regex: '^\\.\\./[^/.][^/]*/.+', message: MODULE_INTERNALS_MESSAGE };
 
+// Infrastructure drivers are confined to their own API module so domain code never depends on them
+// (and Prisma types never leak into other modules or into packages/contracts).
+const PRISMA_ONLY_IN_DATABASE_MODULE = {
+  group: ['@prisma/*', 'prisma', 'prisma/*'],
+  message: 'Prisma may only be imported inside apps/api/src/modules/database.',
+};
+const IOREDIS_ONLY_IN_REDIS_MODULE = {
+  group: ['ioredis', 'ioredis/*'],
+  message: 'ioredis may only be imported inside apps/api/src/modules/redis.',
+};
+
+// The browser app must never depend on database, cache or queue packages.
+const WEB_FORBIDDEN = {
+  group: ['@prisma/*', 'prisma', 'ioredis', 'redis', 'pg', 'bullmq'],
+  message: 'apps/web must not depend on database or infrastructure packages. Use the API.',
+};
+
 export default tseslint.config(
   {
     ignores: ['**/dist/**', '**/node_modules/**', '**/coverage/**', '**/.nx/**'],
@@ -93,7 +110,15 @@ export default tseslint.config(
     rules: {
       'no-restricted-imports': [
         'error',
-        { patterns: [DEEP_IMPORT, NO_APP_IMPORT, MODULE_INTERNALS_FROM_OUTSIDE] },
+        {
+          patterns: [
+            DEEP_IMPORT,
+            NO_APP_IMPORT,
+            MODULE_INTERNALS_FROM_OUTSIDE,
+            PRISMA_ONLY_IN_DATABASE_MODULE,
+            IOREDIS_ONLY_IN_REDIS_MODULE,
+          ],
+        },
       ],
     },
   },
@@ -109,6 +134,45 @@ export default tseslint.config(
             NO_APP_IMPORT,
             MODULE_INTERNALS_FROM_OUTSIDE,
             MODULE_INTERNALS_FROM_SIBLING,
+            PRISMA_ONLY_IN_DATABASE_MODULE,
+            IOREDIS_ONLY_IN_REDIS_MODULE,
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // The two infrastructure modules may import their own driver (and not the other's).
+    files: ['apps/api/src/modules/database/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            DEEP_IMPORT,
+            NO_APP_IMPORT,
+            MODULE_INTERNALS_FROM_OUTSIDE,
+            MODULE_INTERNALS_FROM_SIBLING,
+            IOREDIS_ONLY_IN_REDIS_MODULE,
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ['apps/api/src/modules/redis/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            DEEP_IMPORT,
+            NO_APP_IMPORT,
+            MODULE_INTERNALS_FROM_OUTSIDE,
+            MODULE_INTERNALS_FROM_SIBLING,
+            PRISMA_ONLY_IN_DATABASE_MODULE,
           ],
         },
       ],
@@ -118,6 +182,7 @@ export default tseslint.config(
     files: ['apps/web/**/*.{ts,tsx}'],
     plugins: { 'react-hooks': reactHooks },
     rules: {
+      'no-restricted-imports': ['error', { patterns: [DEEP_IMPORT, NO_APP_IMPORT, WEB_FORBIDDEN] }],
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
     },
