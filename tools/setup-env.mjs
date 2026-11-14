@@ -18,6 +18,13 @@ const secret = () => randomBytes(24).toString('hex'); // URL-safe, so it is vali
 const postgresPassword = secret();
 const redisPassword = secret();
 
+// On GitHub Actions, register the generated values as masked BEFORE anything else can print them: any later log line that
+// contains one (a connection string in an error message, for instance) is replaced by *** in the job log.
+if (process.env.GITHUB_ACTIONS === 'true') {
+  console.log(`::add-mask::${postgresPassword}`);
+  console.log(`::add-mask::${redisPassword}`);
+}
+
 const content = readFileSync(example, 'utf8')
   .replaceAll('change-me-postgres', postgresPassword)
   .replaceAll('change-me-redis', redisPassword);

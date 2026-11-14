@@ -20,17 +20,25 @@
     "graph": "nx graph",
     "setup:env": "node tools/setup-env.mjs",
     "infra:config": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml config --quiet",
+    "stack:config": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml --profile app config --quiet",
     "infra:up": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml up -d --wait",
     "infra:down": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml down",
     "infra:ps": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml ps",
     "infra:logs": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml logs -f --tail=100",
     "infra:destroy-data": "node tools/confirm-destroy.mjs && docker compose --env-file .env -f infrastructure/compose/docker-compose.yml down --volumes",
+    "stack:build": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml --profile app build",
+    "stack:up": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml --profile app up -d --build --wait",
+    "stack:down": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml --profile app down",
+    "stack:ps": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml --profile app ps -a",
+    "stack:logs": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml --profile app logs -f --tail=100",
     "db:generate": "pnpm --filter @agentos/api generate",
     "db:validate": "pnpm --filter @agentos/api db:validate",
     "db:migrate": "pnpm --filter @agentos/api db:migrate",
     "db:deploy": "pnpm --filter @agentos/api db:deploy",
     "db:status": "pnpm --filter @agentos/api db:status",
-    "check:architecture": "node tools/check-module-boundaries.mjs && node tools/check-module-boundaries.mjs apps/web/src/features && node tools/check-module-boundaries.mjs apps/worker/src &&node --test \"tools/*.test.mjs\""
+    "check:architecture": "node tools/check-module-boundaries.mjs && node tools/check-module-boundaries.mjs apps/web/src/features && node tools/check-module-boundaries.mjs apps/worker/src && node tools/check-env.mjs && node --test \"tools/*.test.mjs\"",
+    "check:env": "node tools/check-env.mjs",
+    "test:system": "nx run @agentos/system-tests:test:system"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.0",
@@ -40,6 +48,7 @@
     "nx": "^21.2.0",
     "prettier": "^3.6.0",
     "typescript": "~5.8.3",
-    "typescript-eslint": "^8.35.0"
+    "typescript-eslint": "^8.35.0",
+    "yaml": "2.9.1"
   }
 }

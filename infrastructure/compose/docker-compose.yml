@@ -1,12 +1,34 @@
-# AgentOS development infrastructure: PostgreSQL (source of truth) and Redis (cache / ephemeral state).
+# AgentOS local environment.
 #
-# Run through the root scripts, which pass the repository-level .env file:
-#   pnpm setup:env && pnpm infra:up
+#   pnpm setup:env && pnpm infra:up     PostgreSQL + Redis only      (then run the apps on the host with `pnpm dev`)
+#   pnpm stack:up                       the FULL stack in containers: postgres, redis, migrate, api, worker, web
 #
-# Credentials come from .env and have no defaults on purpose. Published ports are bound to 127.0.0.1 only,
-# so the services are reachable from this machine and nowhere else.
+# The applications are behind the `app` profile, so `infra:up` keeps starting only the infrastructure, exactly as before.
+# Run everything through the root scripts: they pass the repository-level .env file.
+#
+# Credentials come from .env and have no defaults on purpose. Published ports are bound to 127.0.0.1 only, so the services
+# are reachable from this machine and nowhere else (a development-only convenience: see docs/architecture/docker-compose.md).
+#
+# Topology (Docker network "agentos-net"):
+#   web (nginx :8080) --/api--> api (:3000) --> postgres (:5432)        <- source of truth
+#                                  \--> redis (:6379) <-- worker        <- BullMQ queue transport (never a source of truth)
 
 name: agentos
+
+x-app: &app
+  profiles: [app]
+  init: true # a real PID 1: forwards SIGTERM, reaps zombies
+  networks: [agentos-net]
+  # Restart only after a FAILURE (non-zero exit), at most 5 times in a row; a clean exit (0) is never restarted.
+  # See docs/architecture/docker-compose.md ("Supervision") for what this does and does not cover.
+  restart: on-failure:5
+
+x-node-env: &node-env
+  NODE_ENV: production # JSON logs (the only behavioral difference from development: pretty-printing is off)
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  # Inside the network the services are reached by service name. The credentials are interpolated from .env by Compose and
+  # never written to a file in the image.
+  REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required - run "pnpm setup:env"}@redis:6379
 
 services:
   postgres:
@@ -52,9 +74,97 @@ services:
       timeout: 3s
       retries: 10
 
+  # One-shot: applies committed Prisma migrations, then exits 0. The API starts only after it succeeded.
+  migrate:
+    <<: *app
+    restart: 'no' # a failed migration must stop the stack and stay visible, never loop
+    image: agentos-api:local
+    build: { context: ../.., dockerfile: infrastructure/docker/Dockerfile, target: api }
+    command: ['pnpm', '--filter', '@agentos/api', 'exec', 'prisma', 'migrate', 'deploy']
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agentos}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - run "pnpm setup:env"}@postgres:5432/${POSTGRES_DB:-agentos}?schema=public
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  api:
+    <<: *app
+    image: agentos-api:local
+    build: { context: ../.., dockerfile: infrastructure/docker/Dockerfile, target: api }
+    environment:
+      <<: *node-env
+      # Only the API gets PostgreSQL credentials. The worker has no database access by design (ADR-0006): least privilege.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-agentos}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - run "pnpm setup:env"}@postgres:5432/${POSTGRES_DB:-agentos}?schema=public
+      API_HOST: 0.0.0.0 # reachable from other containers; the HOST port below is still bound to 127.0.0.1
+      API_PORT: 3000
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+    ports:
+      - '127.0.0.1:${API_PORT:-3000}:3000'
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_healthy }
+    healthcheck:
+      # READINESS, not just liveness: unhealthy while PostgreSQL or Redis is unreachable (same semantics as /health/ready).
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/api/v1/health/ready',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+    stop_grace_period: 15s
+
+  worker:
+    <<: *app
+    image: agentos-worker:local
+    build: { context: ../.., dockerfile: infrastructure/docker/Dockerfile, target: worker }
+    environment:
+      <<: *node-env
+      QUEUE_PREFIX: ${QUEUE_PREFIX:-agentos}
+      WORKER_NAME: ${WORKER_NAME:-worker}
+      WORKER_QUEUES: ${WORKER_QUEUES:-system}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-5}
+      WORKER_JOB_TIMEOUT_MS: ${WORKER_JOB_TIMEOUT_MS:-60000}
+      WORKER_ABORT_GRACE_MS: ${WORKER_ABORT_GRACE_MS:-10000}
+      WORKER_SHUTDOWN_GRACE_MS: ${WORKER_SHUTDOWN_GRACE_MS:-30000}
+      WORKER_STARTUP_TIMEOUT_MS: ${WORKER_STARTUP_TIMEOUT_MS:-30000}
+      WORKER_LOCK_DURATION_MS: ${WORKER_LOCK_DURATION_MS:-30000}
+      WORKER_HEALTH_FILE: /tmp/worker-health.json
+    depends_on:
+      redis: { condition: service_healthy }
+    healthcheck:
+      # The worker has no HTTP port. This reads the heartbeat file the process maintains: healthy only if the process is
+      # alive, the heartbeat is fresh (< 15 s old) and the worker says it is ready (not starting, draining or cut off from Redis).
+      test: ['CMD', 'node', '/app/apps/worker/dist/healthcheck.js']
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # MUST exceed WORKER_SHUTDOWN_GRACE_MS (default 30 s): otherwise Docker kills the worker before it finished draining and
+    # the shutdown is no longer graceful. tools/check-env.mjs enforces the relation for the defaults.
+    stop_grace_period: 40s
+
+  web:
+    <<: *app
+    image: agentos-web:local
+    build: { context: ../.., dockerfile: infrastructure/docker/Dockerfile, target: web }
+    ports:
+      - '127.0.0.1:${WEB_PORT:-5173}:8080'
+    depends_on:
+      api: { condition: service_healthy }
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:8080/']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
 networks:
   agentos-net:
-    name: agentos-net
+    # Fixed name by default (existing setups keep their network). System tests override it so a throwaway stack can never
+    # share DNS names ("redis", "postgres") with a developer's stack.
+    name: ${AGENTOS_NETWORK:-agentos-net}
 
 volumes:
   postgres-data:

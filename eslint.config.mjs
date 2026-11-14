@@ -146,7 +146,7 @@ const WORKER_IORED_NOT_IN_RUNTIME = {
 };
 // The runtime is generic and reusable: it must not know the process entry, the environment, or any concrete job.
 const RUNTIME_NO_UPWARD = {
-  regex: '^\\.\\./(processors|app|main|config)(/|$)',
+  regex: '^\\.\\./(processors|app|main|run|config|health|healthcheck)(/|$)',
   message:
     'The worker runtime is generic: it must not import processors, config, app or main. Processors and configuration are handed in (see WorkerHostOptions).',
 };
@@ -156,7 +156,7 @@ const PROCESSORS_RUNTIME_PUBLIC_ONLY = {
   message: 'Import the runtime through its public entry ("../runtime"), not its internal files.',
 };
 const PROCESSORS_NO_ENTRY = {
-  regex: '^\\.\\./(app|main|config)(/|$)',
+  regex: '^\\.\\./(app|main|run|config|health|healthcheck)(/|$)',
   message:
     'Processors must not import the process entry or configuration. They receive everything through their JobContext.',
 };
@@ -393,12 +393,7 @@ export default tseslint.config(
     },
   },
   {
-    files: [
-      'apps/worker/src/processors/**/*.ts',
-      'apps/worker/src/app.ts',
-      'apps/worker/src/main.ts',
-      'apps/worker/src/config.ts',
-    ],
+    files: ['apps/worker/src/processors/**/*.ts', 'apps/worker/src/*.ts'],
     ignores: ['**/*.spec.ts'],
     rules: {
       'no-restricted-imports': restrict(
@@ -421,6 +416,16 @@ export default tseslint.config(
         PROCESSORS_RUNTIME_PUBLIC_ONLY,
         PROCESSORS_NO_ENTRY,
       ),
+    },
+  },
+
+  // ---- tests/system ---------------------------------------------------------------------------------------
+  {
+    // Black-box tests of the running stack. They talk to containers over HTTP / Redis and may use bullmq to inspect jobs, but
+    // like the worker they never import an application's sources, a framework or the database client.
+    files: ['tests/system/**/*.ts'],
+    rules: {
+      'no-restricted-imports': restrict(...BASE, WORKER_FORBIDDEN, NO_OTHER_APP_SOURCES),
     },
   },
 
