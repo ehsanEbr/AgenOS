@@ -87,6 +87,7 @@ System / infrastructure conventions (details in docker-compose.md, ci.md, enviro
 - TypeScript is pinned to one version (`overrides` in `pnpm-workspace.yaml`); keep root, api and web in sync.
 - Worker integration tests (`pnpm test:integration`) need `pnpm infra:up`; the process-level ones run the **built** `apps/worker/dist` (Nx builds it first). Real SIGTERM/SIGINT tests run on Linux/CI only (Windows Node cannot deliver SIGTERM): use a Linux container locally.
 - `pnpm stack:down` also stops the infrastructure containers (data volumes are kept); run `pnpm infra:up` afterwards. Never run `pnpm infra:destroy-data` without the user's explicit approval.
+- Docker Compose gives shell environment variables priority over `--env-file`, and Nx loads the repository `.env` into every task: anything that must not see the developer's values (the system-test harness) has to strip them from the environment it passes to `docker compose` (see `composeEnvironment` in `tests/system/src/stack.ts`).
 - Git Bash rewrites `docker run -w /path`: prefix with `MSYS_NO_PATHCONV=1`. On Windows use `localhost` (not `127.0.0.1`) for the Vite dev server.
 - Port 5173 may be taken by other local projects; Vite picks another port and prints it.
 - `antd` and `@ant-design/icons` are pinned to exact versions (v6 changed defaults in minor releases): upgrade them together, run the suite, and look at the app in a browser.
