@@ -140,14 +140,14 @@ describe('the health heartbeat as a supervisor sees it', () => {
     const file = join(dir, 'health.json');
     const worker = launch({ WORKER_HEALTH_FILE: file, WORKER_SHUTDOWN_GRACE_MS: '20000' });
     await worker.waitForLog('worker ready');
-    const { jobId } = await h.producer.enqueue(systemPingJob, { delayMs: 3_000 });
+    await waitFor(() => readSnapshot(file)?.ready === true, { message: 'health file to report ready' });
+    // Long enough that the process is certainly still draining (not finished) when we look at the file.
+    const { jobId } = await h.producer.enqueue(systemPingJob, { delayMs: 6_000 });
     await waitFor(async () => (await h.jobState(jobId)) === 'active', { message: 'job to become active' });
-    await waitFor(() => readSnapshot(file)?.activeJobs === 1, {
-      message: 'heartbeat to show the active job',
-    });
 
+    // No need to wait for a heartbeat tick: shutdown rewrites the file synchronously, whatever the interval.
     worker.signal('SIGTERM');
-    // The job still has ~3 s to run, so the process is alive and draining: it must already say "not ready".
+    // The job still has seconds to run, so the process is alive and draining: it must already say "not ready".
     await waitFor(() => readSnapshot(file)?.state === 'draining', {
       message: 'health file to show draining',
     });
