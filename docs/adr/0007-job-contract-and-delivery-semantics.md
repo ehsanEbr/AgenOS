@@ -36,11 +36,17 @@ Defaults: 3 attempts, 1 s base, jitter 0.5, each bounded and validated (attempts
 environment variable on the worker could contradict the producer. Producers can override per job. Exhausted jobs stay in the failed set
 for 7 days / 5000 jobs (completed: 1 hour / 1000), bounding Redis memory.
 
-### 5. Timeouts abandon, they do not kill
+### 5. Timeouts cannot kill, so the attempt is held until the handler ends
 
-A handler that exceeds `WORKER_JOB_TIMEOUT_MS` has its signal aborted, its slot is freed and the attempt counts as failed.
-JavaScript cannot kill a running async function, so a handler that ignores the signal may continue; this is why idempotency is
-mandatory rather than advisory.
+_Amended after a reliability review; the first implementation released the job at the timeout._ JavaScript cannot kill a running
+async function. A handler that exceeds `WORKER_JOB_TIMEOUT_MS` has its signal aborted and the attempt is classified `timeout`,
+but the attempt is **not released to BullMQ until the handler has actually ended**. Releasing it earlier let the retry start while
+the first handler was still running; this was reproduced (two concurrent executions of one job). While held, the lock keeps
+being renewed, so no worker can take the job. The timer, not the handler's late result, decides the classification. A handler
+still running `WORKER_ABORT_GRACE_MS` after the timeout is reported as stuck and the worker restarts (exit 1): process exit is the
+only real kill, and process isolation per job (worker threads, child processes) was evaluated and not adopted. Idempotency is
+still mandatory: retries and redeliveries still happen, one after another instead of side by side. Details and limits (a synchronous loop that blocks the
+event loop is not protected): [workers.md](../architecture/workers.md#timeouts-and-handler-execution-safety).
 
 ### 6. Correlation and logging
 

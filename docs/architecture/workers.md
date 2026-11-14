@@ -123,15 +123,19 @@ Defined in `@agentos/contracts` (`jobs.ts`), so producers and workers cannot dri
 ## Delivery semantics: at-least-once
 
 **A job may be delivered to a processor more than once. There is no exactly-once guarantee and none is claimed.**
-Redelivery happens when: a worker crashes or is killed mid-job; shutdown outlives the grace period; a handler outlives its
-lock/timeout; a worker loses Redis while running a job and the lock expires; an operator retries a job.
+Redelivery happens when: a worker crashes or is killed mid-job; shutdown outlives the grace period; a stuck handler makes the
+worker restart; a worker loses Redis (or blocks its event loop) while running a job and the lock expires; an operator retries a
+job. A timed-out handler is _not_ on this list: its retry waits until the handler has ended (see
+[Timeouts and handler execution safety](#timeouts-and-handler-execution-safety)).
 
 The contract for processor authors (the same text is the header of `runtime/processor.ts`):
 
 1. **Be idempotent.** Running a job twice must have the same effect as once. Derive keys from the job (`ctx.jobId`, or a business
    id in the payload), use "insert if absent" / upserts / state checks, and pass idempotency keys to external systems.
-2. **Honor `ctx.signal`.** It aborts on timeout and on forced shutdown. Pass it to I/O and stop work promptly. A handler that
-   ignores it is still abandoned (its slot is freed and the attempt counts as failed) but may keep running in the background.
+2. **Honor `ctx.signal`, and never block the event loop for long.** The signal aborts on timeout and on forced shutdown. Pass
+   it to I/O and stop work promptly. Aborting a signal does **not** stop a function: a handler that ignores it keeps running,
+   keeps its concurrency slot and keeps its job (it is never retried beside itself), and after `WORKER_ABORT_GRACE_MS` the
+   worker restarts to get rid of it. A synchronous, CPU-bound loop cannot be timed out or aborted at all.
 3. **Throw `PermanentJobError`** when retrying cannot help (the entity does not exist, the request is invalid). Any other
    thrown error is treated as transient and retried within the attempt budget.
 4. **Do not log payloads or secrets.** Use `ctx.logger`; it already carries queue, job id, type, correlation id and attempt.
@@ -144,12 +148,12 @@ specific to each processor.
 
 ### Failure classes
 
-| Class       | Reasons                                                                                                 | Retried?                                                  |
-| ----------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `permanent` | `invalid_envelope`, `unknown_type`, `unsupported_version`, `invalid_payload`, `handler_permanent_error` | **No**: failed immediately, kept for inspection           |
-| `transient` | `handler_error` (any other thrown error)                                                                | Yes, until attempts are exhausted                         |
-| `timeout`   | `timeout` (no result within `WORKER_JOB_TIMEOUT_MS`)                                                    | Yes, until attempts are exhausted                         |
-| `aborted`   | `shutdown` (forced shutdown interrupted the handler)                                                    | n/a: not acknowledged; redelivered after the lock expires |
+| Class       | Reasons                                                                                                       | Retried?                                                           |
+| ----------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `permanent` | `invalid_envelope`, `unknown_type`, `unsupported_version`, `invalid_payload`, `handler_permanent_error`       | **No**: failed immediately, kept for inspection                    |
+| `transient` | `handler_error` (any other thrown error)                                                                      | Yes, until attempts are exhausted                                  |
+| `timeout`   | `timeout` (still running after `WORKER_JOB_TIMEOUT_MS`; decided by the timer, whatever the handler then does) | Yes, **after the handler has ended**, until attempts are exhausted |
+| `aborted`   | `shutdown` (forced shutdown interrupted the handler)                                                          | n/a: not acknowledged; redelivered after the lock expires          |
 
 Malformed input can never crash the worker or loop: every failure above is a rejected promise that BullMQ records as a failed
 attempt. Permanent failures are converted to BullMQ's `UnrecoverableError`, which skips the remaining attempts.
@@ -177,6 +181,62 @@ jobs** (completed jobs: 1 hour or 1000 jobs), so Redis memory stays bounded. Ins
 (job id, type, attempts made, failure reason such as `handler_error: ...`, time, correlation id) or any BullMQ tool. Reasons
 contain the failure class and a truncated description, never payload values. There is no automatic dead-letter _queue_ or
 replay tooling yet; the failed set is the dead-letter store.
+
+### Timeouts and handler execution safety
+
+JavaScript cannot kill a running function. Aborting an `AbortController` only _asks_ cooperative code to stop. So the runtime
+never assumes a timed-out handler has stopped, and it is built so that **a job's executions never overlap inside the runtime**.
+
+**Flow of one attempt** (`runtime/dispatch.ts`, `createDispatcher`):
+
+1. Validate envelope, find processor, validate payload. Start the handler and a timer (`WORKER_JOB_TIMEOUT_MS`).
+2. The handler ends first: success is acknowledged; a thrown error is classified (permanent or transient) as usual.
+3. The timer fires first: the handler's `ctx.signal` is aborted and the attempt is **marked a timeout, but not released**. The
+   dispatcher keeps waiting for the handler. While it waits, BullMQ still sees an active job, keeps renewing its lock, and
+   schedules no retry, so no second execution can start, here or on another worker.
+4. The handler ends (it honored the signal, or finished anyway, or threw). Only now does the attempt fail with class `timeout`
+   and BullMQ schedules the retry per the retry policy. Whatever the handler did late is logged (`lateOutcome: resolved|rejected`,
+   `settledAfterAbortMs`) but **does not change the classification**: the timer decides. A late success is not promoted to a
+   success, a late `PermanentJobError` is not promoted to a permanent failure. The attempt overran its limit and is retried;
+   the handler must be idempotent anyway (a retry after a late success repeats work, never overlaps it).
+5. The handler is still running `WORKER_ABORT_GRACE_MS` after the timeout (default 10 s): the runtime logs an error
+   (`handler ignored its abort signal ...`) and calls `onStuckHandler`. The worker entry point then shuts down (other active jobs
+   get `WORKER_SHUTDOWN_GRACE_MS`) and **exits with code 1** so a supervisor restarts it. Exiting is the only thing that
+   actually ends arbitrary JavaScript. The stuck job is left unacknowledged and is redelivered after its lock expires.
+6. A **forced shutdown** is the one case where the dispatcher stops waiting for a running handler: the Redis connection is
+   already gone, so nothing can be acknowledged, the job stays `active` and is redelivered, and the handler cannot change its
+   state when it eventually returns. The process must then exit (the entry point does).
+
+**Trade-offs, and what was rejected.** Timeout enforcement, retry availability and execution safety cannot all be had in one
+process without isolation, so this design gives up the _promptness_ of the retry, not safety:
+
+| Approach                                                                             | Result                                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Release the job at the timeout (the first implementation)                            | **Rejected.** Reproduced: attempt 2 started 100 ms after the timeout while attempt 1 still ran (peak concurrency 2)                                                                                                                                                                                |
+| Release at the timeout but block the retry inside this process                       | Rejected: another worker (or this one after a restart) can still take the retry                                                                                                                                                                                                                    |
+| **Hold the attempt until the handler settles; restart the process if it never does** | **Chosen.** No overlap; costs a slot, and the retry's delay, while a handler is misbehaving                                                                                                                                                                                                        |
+| Worker threads / child process per job / container per job                           | Not adopted. They would allow a real kill without restarting the worker, but add an execution engine, a serialization boundary and operational weight that no processor needs yet. Revisit if a processor must run untrusted or non-cooperative code (for example scanning arbitrary repositories) |
+
+**What this guarantees, and what it does not.**
+
+- Within the runtime a job never runs twice at the same time, whether its handler respects the signal or ignores it. Verified
+  with real Redis, including a second worker polling for stalled jobs while the first holds a timed-out job for over three lock
+  durations (`test/timeout.int.spec.ts`; the oracle is the peak number of simultaneously running handlers per job).
+- It does **not** protect against a handler that blocks the event loop (a long synchronous loop): no timer can fire and the lock
+  cannot be renewed, so after the lock expires another worker may start the job while the first is still computing. This is
+  inherent to in-process execution and is **not tested**; keep synchronous work short or chunked, and treat CPU-heavy jobs as a
+  reason for process isolation later.
+- It does not protect against a worker that loses Redis for longer than the lock duration while a handler runs: the job can be
+  redelivered elsewhere while the first handler finishes. That is the at-least-once contract again.
+- **Operationally:** a handler that ignores its signal reduces the worker's capacity (it keeps a slot) and delays that job's
+  retry until it ends; one that never ends costs a worker restart (about `WORKER_JOB_TIMEOUT_MS + WORKER_ABORT_GRACE_MS`, plus up
+  to `WORKER_SHUTDOWN_GRACE_MS` for other jobs, plus the lock duration before redelivery). A job that does this twice is failed by
+  BullMQ's stalled-job limit (`maxStalledCount: 1`), so a poison job cannot restart workers forever. A restarting worker needs
+  a supervisor (Docker `restart`, systemd, Kubernetes), which any production worker needs anyway. Choose
+  `WORKER_JOB_TIMEOUT_MS` above the longest legitimate run, and make processors honor the signal so none of this happens.
+- The worker entry point's reaction to a stuck handler (shut down, exit 1) is covered by a host-level test of the callback and
+  by the shutdown tests, but **not by a process-level test**: the real worker only registers `system.ping`, which honors its
+  signal, and a test-only misbehaving processor is deliberately not part of the production registry.
 
 ## Lifecycle
 
@@ -247,20 +307,21 @@ worker's late acknowledgement is then rejected). This is the at-least-once contr
 
 Read once at startup by `apps/worker/src/config.ts` using `@agentos/config`. Defaults are in `.env.example`.
 
-| Variable                    | Default   | Meaning                                                                                 |
-| --------------------------- | --------- | --------------------------------------------------------------------------------------- |
-| `NODE_ENV`, `LOG_LEVEL`     | as API    | Pretty logs only when `NODE_ENV=development`                                            |
-| `REDIS_URL`                 | required  | `redis://[:password@]host:port[/db]` (`rediss://` allowed). The same Redis the API uses |
-| `QUEUE_PREFIX`              | `agentos` | Redis key namespace; producers and workers must agree                                   |
-| `WORKER_NAME`               | `worker`  | Shown in logs and Redis; distinct per deployed worker                                   |
-| `WORKER_QUEUES`             | `system`  | Comma-separated, validated against the known queues                                     |
-| `WORKER_CONCURRENCY`        | 5         | Parallel jobs **per queue** (1-100)                                                     |
-| `WORKER_JOB_TIMEOUT_MS`     | 60000     | Per-attempt limit (1 s - 1 h)                                                           |
-| `WORKER_SHUTDOWN_GRACE_MS`  | 30000     | Drain time on SIGTERM/SIGINT (0 - 10 min)                                               |
-| `WORKER_STARTUP_TIMEOUT_MS` | 30000     | Give up starting if Redis is unusable                                                   |
-| `WORKER_LOCK_DURATION_MS`   | 30000     | Lock without renewal; crash recovery delay. The runtime renews it while a handler runs  |
+| Variable                    | Default   | Meaning                                                                                              |
+| --------------------------- | --------- | ---------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`, `LOG_LEVEL`     | as API    | Pretty logs only when `NODE_ENV=development`                                                         |
+| `REDIS_URL`                 | required  | `redis://[:password@]host:port[/db]` (`rediss://` allowed). The same Redis the API uses              |
+| `QUEUE_PREFIX`              | `agentos` | Redis key namespace; producers and workers must agree                                                |
+| `WORKER_NAME`               | `worker`  | Shown in logs and Redis; distinct per deployed worker                                                |
+| `WORKER_QUEUES`             | `system`  | Comma-separated, validated against the known queues                                                  |
+| `WORKER_CONCURRENCY`        | 5         | Parallel jobs **per queue** (1-100)                                                                  |
+| `WORKER_JOB_TIMEOUT_MS`     | 60000     | Per-attempt limit (1 s - 1 h): aborts the handler's signal; the retry waits for the handler to end   |
+| `WORKER_ABORT_GRACE_MS`     | 10000     | How long a handler may ignore its aborted signal before the worker restarts itself (100 ms - 10 min) |
+| `WORKER_SHUTDOWN_GRACE_MS`  | 30000     | Drain time on SIGTERM/SIGINT (0 - 10 min)                                                            |
+| `WORKER_STARTUP_TIMEOUT_MS` | 30000     | Give up starting if Redis is unusable                                                                |
+| `WORKER_LOCK_DURATION_MS`   | 30000     | Lock without renewal; crash recovery delay. The runtime renews it while a handler runs               |
 
-Exit codes: `0` clean shutdown, `1` runtime/startup failure or forced shutdown, `2` invalid configuration.
+Exit codes: `0` clean shutdown, `1` runtime/startup failure, forced shutdown or a stuck handler, `2` invalid configuration.
 
 ## Logging and observability
 
@@ -315,11 +376,11 @@ a container to exercise graceful shutdown by hand.
 
 ## Testing
 
-| Layer                                               | Command                 | Needs Redis | What it proves                                                                                                                                                                                                                                                             |
-| --------------------------------------------------- | ----------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Contracts, config, logger, queue, worker unit tests | `pnpm test`             | No          | Envelope validation, registry, failure classification, retry policy/options, lifecycle transitions, config validation, secret redaction                                                                                                                                    |
-| Worker host integration                             | `pnpm test:integration` | Yes         | Real Redis: success, retry, exhaustion, permanent failure, timeout, malformed jobs, concurrency, de-duplication, duplicate delivery, graceful and forced shutdown, recovery by another worker, Redis outage and recovery (via a TCP proxy), startup failure with redaction |
-| Worker process integration                          | `pnpm test:integration` | Yes         | The built `dist/main.js` as an OS process: exit codes 0/1/2, real SIGTERM and SIGINT (POSIX only), second signal, SIGKILL recovery                                                                                                                                         |
+| Layer                                               | Command                 | Needs Redis | What it proves                                                                                                                                                                                                                                                    |
+| --------------------------------------------------- | ----------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Contracts, config, logger, queue, worker unit tests | `pnpm test`             | No          | Envelope validation, registry, failure classification, retry policy/options, lifecycle transitions, config validation, secret redaction                                                                                                                           |
+| Worker host integration                             | `pnpm test:integration` | Yes         | Real Redis: success, retry, exhaustion, permanent failure, malformed jobs, concurrency, de-duplication, duplicate delivery, graceful and forced shutdown, recovery by another worker, Redis outage and recovery (via a TCP proxy), startup failure with redaction |
+| Worker process integration                          | `pnpm test:integration` | Yes         | The built `dist/main.js` as an OS process: exit codes 0/1/2, real SIGTERM and SIGINT (POSIX only), second signal, SIGKILL recovery                                                                                                                                |
 
 Integration tests use logical database 15 and a unique queue prefix per test, delete their keys, and synchronize on conditions
 (job state in Redis, events from handlers, log lines) rather than fixed sleeps. Signal tests are skipped on Windows (stated in
@@ -336,8 +397,9 @@ the test output) and run in CI (Ubuntu) and in any Linux container; they are not
 - **Redis must use `maxmemory-policy noeviction`** (the Redis default; compose does not change it). An evicting Redis can drop
   queue keys.
 - **No replay tooling or dead-letter queue**, only the retained failed set and `failedJobs()`.
-- **Timeouts abandon, they cannot kill.** A handler that ignores its `AbortSignal` keeps running in the background after its
-  attempt is failed; honoring the signal is the processor's duty.
+- **Timeouts cannot kill.** A handler that ignores its `AbortSignal` keeps its slot and its job until it ends; if it never ends
+  the worker restarts. A synchronous handler that blocks the event loop cannot be timed out and is not protected from
+  overlapping after its lock expires. See [Timeouts and handler execution safety](#timeouts-and-handler-execution-safety).
 - **No rate limiting, priorities, scheduling or flow (parent/child) jobs** are configured. BullMQ supports them; adding them
   needs a decision per use.
 - **One concurrency value** for all queues of a process; per-queue tuning arrives with the first worker that needs it.
