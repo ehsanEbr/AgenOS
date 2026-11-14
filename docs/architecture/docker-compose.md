@@ -138,6 +138,12 @@ proxying `/api` to the API container, resolving the API by name per request so t
   Runs as the unprivileged `node` user. The web image runs as an unprivileged nginx. No secret is copied or passed as a build
   argument (`.dockerignore` excludes `.env*`).
 - The apps are built with `pnpm install --frozen-lockfile` and the normal Nx build, so containers run exactly what CI builds.
+- **Tags and provenance.** Developer images are `agentos-api|worker|web:local` (the default of `AGENTOS_IMAGE_TAG`). The system
+  tests use `:systest` and never touch the `:local` images. Every image carries the label
+  `org.opencontainers.image.revision` with the commit it was built from (`GIT_REVISION`; `unknown` for an ordinary
+  `pnpm stack:up`). The system-test harness rejects any image whose label is not the current commit (`<sha>-dirty` if the tree has
+  uncommitted changes), so a stale image or a developer build cannot be reused by accident, and its first test checks that every
+  running container was created from the verified image ID.
 
 **Limitations (intentional for this phase):** these are development/verification images, not production images. The `api` and
 `worker` targets contain the whole built workspace including dev dependencies (about 1.4 GB each, sharing layers). There is no image

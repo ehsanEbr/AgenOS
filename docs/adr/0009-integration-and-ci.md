@@ -74,6 +74,15 @@ On its first run it found a real defect: Compose passed `DATABASE_URL` to the wo
 lockfile as a transitive dependency and now pinned (2.9.1) as a root devDependency so that `tools/` can import it (rule 4: no new
 package is downloaded).
 
+### 9. Image provenance and a separate test image tag (added after the final build verification)
+
+Investigating intermittent `DeadlineExceeded` build failures found their cause in the machine's DNS, not in the build (see
+[development.md](../architecture/development.md#docker-hub-unreachable-a-dns-problem-not-a-build-problem)), and exposed that the
+system-test harness shared the developer's `agentos-*:local` images. Images now carry the commit they were built from
+(`org.opencontainers.image.revision`), the harness uses its own tag (`agentos-*:systest`) and refuses to run on images that are not
+from the current commit, the isolation guard also checks the PostgreSQL password and the image names, and aborting creation removes
+the generated credentials. No new infrastructure: a Dockerfile `ARG`/`LABEL`, one Compose variable and harness checks.
+
 ## Consequences
 
 - A developer can run the whole system with documented commands and see its lifecycle behavior, not just read about it.

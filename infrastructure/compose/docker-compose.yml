@@ -23,6 +23,14 @@ x-app: &app
   # See docs/architecture/docker-compose.md ("Supervision") for what this does and does not cover.
   restart: on-failure:5
 
+# One build definition for all three images. GIT_REVISION labels the image with the commit it was built from (provenance);
+# AGENTOS_IMAGE_TAG lets the system tests use their own tag ("systest") so they never reuse or overwrite a developer's `local` images.
+x-build: &build
+  context: ../..
+  dockerfile: infrastructure/docker/Dockerfile
+  args:
+    GIT_REVISION: ${GIT_REVISION:-unknown}
+
 x-node-env: &node-env
   NODE_ENV: production # JSON logs (the only behavioral difference from development: pretty-printing is off)
   LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -78,8 +86,8 @@ services:
   migrate:
     <<: *app
     restart: 'no' # a failed migration must stop the stack and stay visible, never loop
-    image: agentos-api:local
-    build: { context: ../.., dockerfile: infrastructure/docker/Dockerfile, target: api }
+    image: agentos-api:${AGENTOS_IMAGE_TAG:-local}
+    build: { <<: *build, target: api }
     command: ['pnpm', '--filter', '@agentos/api', 'exec', 'prisma', 'migrate', 'deploy']
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-agentos}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - run "pnpm setup:env"}@postgres:5432/${POSTGRES_DB:-agentos}?schema=public
@@ -88,8 +96,8 @@ services:
 
   api:
     <<: *app
-    image: agentos-api:local
-    build: { context: ../.., dockerfile: infrastructure/docker/Dockerfile, target: api }
+    image: agentos-api:${AGENTOS_IMAGE_TAG:-local}
+    build: { <<: *build, target: api }
     environment:
       <<: *node-env
       # Only the API gets PostgreSQL credentials. The worker has no database access by design (ADR-0006): least privilege.
@@ -117,8 +125,8 @@ services:
 
   worker:
     <<: *app
-    image: agentos-worker:local
-    build: { context: ../.., dockerfile: infrastructure/docker/Dockerfile, target: worker }
+    image: agentos-worker:${AGENTOS_IMAGE_TAG:-local}
+    build: { <<: *build, target: worker }
     environment:
       <<: *node-env
       QUEUE_PREFIX: ${QUEUE_PREFIX:-agentos}
@@ -147,8 +155,8 @@ services:
 
   web:
     <<: *app
-    image: agentos-web:local
-    build: { context: ../.., dockerfile: infrastructure/docker/Dockerfile, target: web }
+    image: agentos-web:${AGENTOS_IMAGE_TAG:-local}
+    build: { <<: *build, target: web }
     ports:
       - '127.0.0.1:${WEB_PORT:-5173}:8080'
     depends_on:

@@ -25,8 +25,15 @@ export interface CommandResult {
  * those values silently override the throwaway stack's generated ones, so the "isolated" stack would publish on the developer's
  * ports with the developer's credentials. Every variable the project's configuration defines is therefore removed here.
  */
-function composeEnvironment(): NodeJS.ProcessEnv {
-  const names = new Set(['AGENTOS_NETWORK', 'DATABASE_URL', 'REDIS_URL']);
+function composeEnvironment(injectAfterSanitizing: Record<string, string> = {}): NodeJS.ProcessEnv {
+  // Besides everything documented in .env.example: the variables scripts and this harness set themselves.
+  const names = new Set([
+    'AGENTOS_NETWORK',
+    'AGENTOS_IMAGE_TAG',
+    'GIT_REVISION',
+    'DATABASE_URL',
+    'REDIS_URL',
+  ]);
   for (const match of readFileSync(join(REPO_ROOT, '.env.example'), 'utf8').matchAll(
     /^#?\s*([A-Z][A-Z0-9_]*)=/gm,
   )) {
@@ -36,8 +43,14 @@ function composeEnvironment(): NodeJS.ProcessEnv {
   for (const [key, value] of Object.entries(process.env)) {
     if (!names.has(key) && !key.startsWith('COMPOSE_')) clean[key] = value;
   }
-  return clean;
+  // Only the isolation guard's own fault-injection test uses this (see StackOptions.injectAfterSanitizing).
+  return { ...clean, ...injectAfterSanitizing };
 }
+
+/** Image tag used by the system tests. Developers' images are tagged `local`; the two never share an image. */
+export const TEST_IMAGE_TAG = 'systest';
+export const APP_IMAGES = ['agentos-api', 'agentos-worker', 'agentos-web'] as const;
+const REVISION_LABEL = 'org.opencontainers.image.revision';
 
 export function run(
   command: string,
@@ -97,6 +110,11 @@ export interface StackOptions {
    * test-only entry that contains a handler which never ends, inside the real image, under the real restart policy.
    */
   workerCommand?: string[];
+  /**
+   * FAULT INJECTION ONLY. Variables added to the environment of `docker compose` AFTER the ambient environment was sanitized,
+   * to simulate a leak the sanitizing missed. Used solely by the test that proves the isolation guard aborts.
+   */
+  injectAfterSanitizing?: Record<string, string>;
 }
 
 /**
@@ -108,7 +126,8 @@ export class Stack {
   private readonly dir = mkdtempSync(join(tmpdir(), 'agentos-systest-'));
   private readonly envFile = join(this.dir, 'env');
   private readonly overrideFile = join(this.dir, 'override.yml');
-  readonly redisPassword = randomBytes(16).toString('hex');
+  readonly redisPassword: string;
+  private readonly postgresPassword: string;
   ports = { api: 0, web: 0, postgres: 0, redis: 0 };
   readonly prefix = 'systest';
   readonly workerName = 'systest-worker';
@@ -116,50 +135,65 @@ export class Stack {
   private queueHandle?: Queue;
   private producerHandle?: QueueProducer;
 
-  private constructor(private readonly options: StackOptions) {}
+  private constructor(
+    private readonly options: StackOptions,
+    passwords: { redis: string; postgres: string },
+  ) {
+    this.redisPassword = passwords.redis;
+    this.postgresPassword = passwords.postgres;
+  }
 
   static async create(options: StackOptions = {}): Promise<Stack> {
-    const stack = new Stack(options);
-    stack.ports = {
-      api: await freePort(),
-      web: await freePort(),
-      postgres: await freePort(),
-      redis: await freePort(),
-    };
-    const postgresPassword = randomBytes(16).toString('hex');
-    const lines = {
-      POSTGRES_USER: 'agentos',
-      POSTGRES_PASSWORD: postgresPassword,
-      POSTGRES_DB: 'agentos',
-      POSTGRES_PORT: String(stack.ports.postgres),
-      REDIS_PASSWORD: stack.redisPassword,
-      REDIS_PORT: String(stack.ports.redis),
-      API_PORT: String(stack.ports.api),
-      WEB_PORT: String(stack.ports.web),
-      AGENTOS_NETWORK: `${stack.project}-net`,
-      QUEUE_PREFIX: stack.prefix,
-      WORKER_NAME: stack.workerName,
-      // Short, test-friendly timings (the production defaults are in .env.example).
-      WORKER_LOCK_DURATION_MS: '2000',
-      WORKER_SHUTDOWN_GRACE_MS: '20000',
-      ...options.env,
-    };
-    if (options.workerCommand) {
+    const stack = new Stack(options, {
+      redis: options.env?.REDIS_PASSWORD ?? randomBytes(16).toString('hex'),
+      postgres: options.env?.POSTGRES_PASSWORD ?? randomBytes(16).toString('hex'),
+    });
+    try {
+      stack.ports = {
+        api: await freePort(),
+        web: await freePort(),
+        postgres: await freePort(),
+        redis: await freePort(),
+      };
+      const lines = {
+        POSTGRES_USER: 'agentos',
+        POSTGRES_PASSWORD: stack.postgresPassword,
+        POSTGRES_DB: 'agentos',
+        POSTGRES_PORT: String(stack.ports.postgres),
+        REDIS_PASSWORD: stack.redisPassword,
+        REDIS_PORT: String(stack.ports.redis),
+        API_PORT: String(stack.ports.api),
+        WEB_PORT: String(stack.ports.web),
+        AGENTOS_NETWORK: `${stack.project}-net`,
+        AGENTOS_IMAGE_TAG: TEST_IMAGE_TAG, // never the developer's `local` images
+        QUEUE_PREFIX: stack.prefix,
+        WORKER_NAME: stack.workerName,
+        // Short, test-friendly timings (the production defaults are in .env.example).
+        WORKER_LOCK_DURATION_MS: '2000',
+        WORKER_SHUTDOWN_GRACE_MS: '20000',
+        ...options.env,
+      };
+      if (options.workerCommand) {
+        writeFileSync(
+          stack.overrideFile,
+          // working_dir: the test entry is run by tsx, which is installed in apps/worker (not at the workspace root).
+          `services:\n  worker:\n    working_dir: /app/apps/worker\n    command: ${JSON.stringify(options.workerCommand)}\n`,
+        );
+      }
       writeFileSync(
-        stack.overrideFile,
-        // working_dir: the test entry is run by tsx, which is installed in apps/worker (not at the workspace root).
-        `services:\n  worker:\n    working_dir: /app/apps/worker\n    command: ${JSON.stringify(options.workerCommand)}\n`,
+        stack.envFile,
+        `${Object.entries(lines)
+          .map(([k, v]) => `${k}=${v}`)
+          .join('\n')}\n`,
+        { mode: 0o600 },
       );
+      await stack.assertIsolated(); // `compose config` only: no container, network, volume or port exists yet
+      return stack;
+    } catch (error) {
+      // Never leave the generated credentials behind when creation is aborted.
+      rmSync(stack.dir, { recursive: true, force: true });
+      throw error;
     }
-    writeFileSync(
-      stack.envFile,
-      `${Object.entries(lines)
-        .map(([k, v]) => `${k}=${v}`)
-        .join('\n')}\n`,
-      { mode: 0o600 },
-    );
-    await stack.assertIsolated();
-    return stack;
   }
 
   /**
@@ -169,13 +203,19 @@ export class Stack {
    */
   private async assertIsolated(): Promise<void> {
     const result = await this.compose(['config', '--format', 'json']);
-    if (result.code !== 0) throw new Error(`compose config failed: ${result.stderr.slice(-500)}`);
+    // Never echo compose output here: it contains the resolved environment, i.e. credentials.
+    if (result.code !== 0)
+      throw new Error('compose config failed (output withheld: it may contain credentials)');
     const config = JSON.parse(result.stdout) as {
       name?: string;
       networks?: Record<string, { name?: string }>;
       services?: Record<
         string,
-        { environment?: Record<string, string>; ports?: Array<{ published?: string | number }> }
+        {
+          image?: string;
+          environment?: Record<string, string>;
+          ports?: Array<{ published?: string | number }>;
+        }
       >;
     };
     const published = (service: string) => String(config.services?.[service]?.ports?.[0]?.published);
@@ -188,10 +228,22 @@ export class Stack {
     if (published('web') !== String(this.ports.web)) problems.push('web port');
     if (config.services?.redis?.environment?.REDIS_PASSWORD !== this.redisPassword)
       problems.push('redis password');
+    if (config.services?.postgres?.environment?.POSTGRES_PASSWORD !== this.postgresPassword)
+      problems.push('postgres password');
+    for (const [service, image] of [
+      ['api', 'agentos-api'],
+      ['migrate', 'agentos-api'],
+      ['worker', 'agentos-worker'],
+      ['web', 'agentos-web'],
+    ] as const) {
+      if (config.services?.[service]?.image !== `${image}:${TEST_IMAGE_TAG}`)
+        problems.push(`${service} image`);
+    }
     if (problems.length > 0) {
+      // Names the project and the kind of setting only, never a value.
       throw new Error(
-        `system-test isolation broken: Compose resolved different ${problems.join(', ')} than the harness generated ` +
-          '(an ambient environment variable is overriding the throwaway configuration)',
+        `system-test isolation broken (project ${this.project}): Compose resolved different ${problems.join(', ')} ` +
+          'than the harness generated (an ambient environment variable is overriding the throwaway configuration)',
       );
     }
   }
@@ -215,7 +267,7 @@ export class Stack {
   /** Runs `docker compose <args>` for this project. */
   compose(args: string[], timeoutMs?: number): Promise<CommandResult> {
     return run('docker', this.composeArgs(args), {
-      env: composeEnvironment(),
+      env: composeEnvironment(this.options.injectAfterSanitizing),
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
     });
   }
@@ -339,6 +391,18 @@ export class Stack {
       .filter((name) => name.startsWith(`agentos:${this.workerName}:`));
   }
 
+  /** The ID of the image a service's container was created from (to prove the tests ran on the verified images). */
+  async containerImageId(service: string): Promise<string> {
+    const result = await run('docker', [
+      'inspect',
+      '--format',
+      '{{.Image}}',
+      await this.containerId(service),
+    ]);
+    if (result.code !== 0) throw new Error(`docker inspect failed: ${result.stderr}`);
+    return result.stdout.trim();
+  }
+
   /** Stops everything and deletes this project's containers, network and volumes. Refuses any project it did not create. */
   async destroy(): Promise<void> {
     if (!this.project.startsWith(THROWAWAY_PREFIX)) {
@@ -366,11 +430,88 @@ export class Stack {
   }
 }
 
-/** Builds the application images once (BuildKit caches layers), under a build-only project name. */
-export async function buildImages(): Promise<void> {
-  const envFile = join(mkdtempSync(join(tmpdir(), 'agentos-systest-build-')), 'env');
-  // Images are built without secrets; these placeholder values only satisfy Compose's "required variable" checks.
-  writeFileSync(envFile, 'POSTGRES_PASSWORD=build-only\nREDIS_PASSWORD=build-only\n', { mode: 0o600 });
+/** The commit the working tree is at: `<sha>`, or `<sha>-dirty` when there are uncommitted changes. */
+export async function currentRevision(): Promise<string> {
+  const head = (await run('git', ['rev-parse', 'HEAD'])).stdout.trim();
+  if (!/^[0-9a-f]{40}$/.test(head)) throw new Error('cannot determine the current git revision');
+  const dirty = (await run('git', ['status', '--porcelain'])).stdout.trim().length > 0;
+  return dirty ? `${head}-dirty` : head;
+}
+
+export interface ImageRecord {
+  reference: string;
+  id: string;
+  created: string;
+  /** The `org.opencontainers.image.revision` label: the commit the image was built from. */
+  revision: string;
+}
+
+/** Reads the three application images with the given tag. Throws if one does not exist. */
+export async function inspectImages(tag: string = TEST_IMAGE_TAG): Promise<ImageRecord[]> {
+  const references = APP_IMAGES.map((name) => `${name}:${tag}`);
+  const result = await run('docker', ['image', 'inspect', ...references]);
+  if (result.code !== 0) throw new Error(`missing image(s) among ${references.join(', ')}: build them first`);
+  const found = JSON.parse(result.stdout) as Array<{
+    Id: string;
+    Created: string;
+    RepoTags: string[];
+    Config?: { Labels?: Record<string, string> | null };
+  }>;
+  return references.map((reference) => {
+    const image = found.find((entry) => entry.RepoTags.includes(reference));
+    if (!image) throw new Error(`image ${reference} not found`);
+    return {
+      reference,
+      id: image.Id,
+      created: image.Created,
+      revision: image.Config?.Labels?.[REVISION_LABEL] ?? 'none',
+    };
+  });
+}
+
+/**
+ * Provenance rule: every application image must have been built from the revision being tested. An image built by anything
+ * else (a developer's `pnpm stack:up`, an older commit, an image with no label) is rejected, never silently reused.
+ * @returns problems; empty means every image is from `expectedRevision`
+ */
+export function checkProvenance(records: ImageRecord[], expectedRevision: string): string[] {
+  const problems: string[] = [];
+  for (const name of APP_IMAGES) {
+    const record = records.find((r) => r.reference.startsWith(`${name}:`));
+    if (!record) problems.push(`${name}: no image`);
+    else if (record.revision !== expectedRevision) {
+      problems.push(`${record.reference}: built from "${record.revision}", expected "${expectedRevision}"`);
+    }
+  }
+  return problems;
+}
+
+/** Verifies the existing test images against the current revision (used on its own when the build is skipped). */
+export async function verifyImageProvenance(): Promise<ImageRecord[]> {
+  const records = await inspectImages();
+  const problems = checkProvenance(records, await currentRevision());
+  if (problems.length > 0) {
+    throw new Error(`image provenance check failed:\n  ${problems.join('\n  ')}`);
+  }
+  return records;
+}
+
+/**
+ * Builds the three application images for the CURRENT commit under the test tag, then verifies their provenance.
+ * Built one target at a time, with a retry for a transient network error (the retry resumes from completed layers).
+ * (An earlier version blamed "DeadlineExceeded" on concurrent builds; the real cause was the local DNS resolver intermittently
+ * returning addresses that do not serve Docker Hub, see docs/architecture/docker-compose.md.)
+ */
+export async function buildImages(): Promise<ImageRecord[]> {
+  const revision = await currentRevision();
+  const buildDir = mkdtempSync(join(tmpdir(), 'agentos-systest-build-'));
+  const envFile = join(buildDir, 'env');
+  // Images are built without secrets; the placeholder passwords only satisfy Compose's "required variable" checks.
+  writeFileSync(
+    envFile,
+    `POSTGRES_PASSWORD=build-only\nREDIS_PASSWORD=build-only\nAGENTOS_IMAGE_TAG=${TEST_IMAGE_TAG}\nGIT_REVISION=${revision}\n`,
+    { mode: 0o600 },
+  );
   const build = (service: string) =>
     run(
       'docker',
@@ -391,10 +532,6 @@ export async function buildImages(): Promise<void> {
     );
 
   try {
-    // One target at a time. They share one expensive stage (install + build of the whole workspace); building all three at once
-    // makes three clients wait on it and a cold build can hit BuildKit's client deadline ("DeadlineExceeded") even though the
-    // shared stage itself finishes. The first build populates the cache, the other two reuse it. One retry covers a transient
-    // network error during the install (the second attempt resumes from the layers that did complete).
     for (const service of ['api', 'worker', 'web']) {
       let result = await build(service);
       if (result.code !== 0) result = await build(service);
@@ -402,6 +539,7 @@ export async function buildImages(): Promise<void> {
         throw new Error(`image build failed for ${service}:\n${result.stderr.slice(-3000)}`);
     }
   } finally {
-    rmSync(envFile, { force: true });
+    rmSync(buildDir, { recursive: true, force: true });
   }
+  return verifyImageProvenance();
 }

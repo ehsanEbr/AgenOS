@@ -52,12 +52,18 @@ RUN pnpm nx run-many -t build
 
 # ---------------------------------------------------------------------------------------------------------------------
 FROM build AS api
+# Provenance: which commit this image was built from (set by the build script or the system-test harness; "unknown" otherwise).
+# Declared in the final stages only, so it never invalidates the cached install/build layers.
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision=$GIT_REVISION
 ENV NODE_ENV=production
 EXPOSE 3000
 CMD ["node", "apps/api/dist/main.js"]
 
 # ---------------------------------------------------------------------------------------------------------------------
 FROM build AS worker
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision=$GIT_REVISION
 ENV NODE_ENV=production
 # No port: the worker has no HTTP server. Compose observes it through `node apps/worker/dist/healthcheck.js`.
 CMD ["node", "apps/worker/dist/main.js"]
@@ -65,6 +71,8 @@ CMD ["node", "apps/worker/dist/main.js"]
 # ---------------------------------------------------------------------------------------------------------------------
 # Static web app + same-origin reverse proxy to the API (the browser code calls "/api/v1" exactly as under `vite dev`).
 FROM nginxinc/nginx-unprivileged:1.27-alpine AS web
+ARG GIT_REVISION=unknown
+LABEL org.opencontainers.image.revision=$GIT_REVISION
 COPY infrastructure/docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 EXPOSE 8080

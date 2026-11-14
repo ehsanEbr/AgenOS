@@ -1,6 +1,6 @@
 import { readinessResponseSchema, systemPingJob } from '@agentos/contracts';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Stack } from '../src/stack';
+import { Stack, currentRevision, inspectImages } from '../src/stack';
 import { waitFor } from '../src/wait';
 
 /*
@@ -17,6 +17,25 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await stack.destroy();
+});
+
+describe('the stack runs on the verified images', () => {
+  it('every container was created from the image that was built from this commit (not a developer image)', async () => {
+    const revision = await currentRevision();
+    const images = await inspectImages(); // agentos-*:systest, never the developer's agentos-*:local
+    const byReference = new Map(images.map((image) => [image.reference, image]));
+    const expected: Record<string, string> = {
+      api: 'agentos-api:systest',
+      migrate: 'agentos-api:systest',
+      worker: 'agentos-worker:systest',
+      web: 'agentos-web:systest',
+    };
+    for (const [service, reference] of Object.entries(expected)) {
+      const image = byReference.get(reference);
+      expect(image?.revision, `${reference} revision label`).toBe(revision);
+      expect(await stack.containerImageId(service), `${service} container image`).toBe(image?.id);
+    }
+  });
 });
 
 describe('startup respects dependency readiness', () => {

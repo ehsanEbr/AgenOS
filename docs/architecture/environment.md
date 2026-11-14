@@ -37,6 +37,10 @@ and container configuration differ. The values and comments in [`.env.example`](
 | `WORKER_HEALTH_FILE`                                                               | worker, Compose sets it               | unset (disabled)                            | Heartbeat file read by the container health check                                                          |
 | `VITE_API_BASE_URL`, `VITE_API_TIMEOUT_MS`, `VITE_DEV_API_TARGET`                  | web (`apps/web/.env.example`)         | `/api/v1`, `15000`, `http://127.0.0.1:3000` | Build/dev-time only; not secrets                                                                           |
 
+`AGENTOS_NETWORK`, `AGENTOS_IMAGE_TAG` and `GIT_REVISION` are set by scripts and the system-test harness (network name, image tag, the
+commit an image is labelled with), not by developers; their defaults (`agentos-net`, `local`, `unknown`) are right for normal use,
+and `check-env` deliberately does not require them in `.env.example`.
+
 `API_PORT` and `WEB_PORT` mean "where you reach it on the host" in both modes, so changing them works the same with `pnpm dev`
 and `pnpm stack:up`.
 

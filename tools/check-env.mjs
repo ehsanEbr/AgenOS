@@ -94,7 +94,8 @@ export function checkEnvironment(root) {
   const composeDefaults = new Map();
   for (const match of composeText.matchAll(/\$\{([A-Z][A-Z0-9_]*)(?::([-?])([^}]*))?\}/g)) {
     const [, name, op, value] = match;
-    if (name === 'AGENTOS_NETWORK') continue; // system tests override the network name; not a developer setting
+    // Set by scripts and the system-test harness, not developer settings: network name, image tag, provenance revision.
+    if (['AGENTOS_NETWORK', 'AGENTOS_IMAGE_TAG', 'GIT_REVISION'].includes(name)) continue;
     if (!documented(name))
       problems.push(`docker-compose.yml references \${${name}} but .env.example does not document it`);
     if (op === '-') composeDefaults.set(name, value);

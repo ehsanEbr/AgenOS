@@ -73,5 +73,5 @@ opened (or when dispatched by hand); there is no separate push trigger for phase
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | verify          | `pnpm setup:env && pnpm infra:config && pnpm stack:config && pnpm format:check && pnpm lint && pnpm check:architecture && pnpm typecheck && pnpm test && pnpm build` |
 | integration     | `pnpm infra:up && pnpm db:validate && pnpm db:deploy && pnpm test:integration`                                                                                       |
-| system          | `pnpm test:system` (needs Docker; builds images first, `SYSTEST_SKIP_BUILD=1` reuses them)                                                                           |
+| system          | `pnpm test:system` (needs Docker; builds images first; `SYSTEST_SKIP_BUILD=1` reuses images only if they were built from this commit)                                |
 | workflow syntax | `docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:latest`                                                                                                |

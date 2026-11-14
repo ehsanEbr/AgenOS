@@ -67,15 +67,15 @@ The worker logs `job completed` with the job id, type and correlation id.
 
 ## Troubleshooting
 
-| Symptom                                                    | Likely cause and fix                                                                                                                                                                                                                                                 |
-| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| API exits with a message naming `DATABASE_URL`/`REDIS_URL` | `.env` missing: run `pnpm setup:env`                                                                                                                                                                                                                                 |
-| `password authentication failed` after editing `.env`      | PostgreSQL only applies the password when its volume is created; see [infrastructure.md](infrastructure.md)                                                                                                                                                          |
-| Worker container `Exited (2)`                              | Invalid worker configuration: `pnpm stack:logs` names the variable (never its value)                                                                                                                                                                                 |
-| Worker container `unhealthy`                               | `docker inspect --format '{{json .State.Health}}' <container>`: the last probe line says why (not ready / Redis down / stale heartbeat)                                                                                                                              |
-| `stack:up` build fails on `apt-get` with 503               | A transient Debian mirror error; the Dockerfile retries 5 times, run it again                                                                                                                                                                                        |
-| Image build fails with `DeadlineExceeded`                  | Docker Hub unreachable or slow from your network (BuildKit resolves base-image tags online). Check `docker buildx imagetools inspect node:22.14.0-bookworm-slim` and retry when it answers. `SYSTEST_SKIP_BUILD=1` runs the system tests on images you already built |
-| `ERR_PNPM_IGNORED_BUILDS` after adding a dependency        | Allow or deny its install script in `pnpm-workspace.yaml` (`allowBuilds`)                                                                                                                                                                                            |
+| Symptom                                                                                     | Likely cause and fix                                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API exits with a message naming `DATABASE_URL`/`REDIS_URL`                                  | `.env` missing: run `pnpm setup:env`                                                                                                                                                                                                                                                                                              |
+| `password authentication failed` after editing `.env`                                       | PostgreSQL only applies the password when its volume is created; see [infrastructure.md](infrastructure.md)                                                                                                                                                                                                                       |
+| Worker container `Exited (2)`                                                               | Invalid worker configuration: `pnpm stack:logs` names the variable (never its value)                                                                                                                                                                                                                                              |
+| Worker container `unhealthy`                                                                | `docker inspect --format '{{json .State.Health}}' <container>`: the last probe line says why (not ready / Redis down / stale heartbeat)                                                                                                                                                                                           |
+| `stack:up` build fails on `apt-get` with 503                                                | A transient Debian mirror error; the Dockerfile retries 5 times, run it again                                                                                                                                                                                                                                                     |
+| Image build or pull fails with `DeadlineExceeded` / `i/o timeout` to `registry-1.docker.io` | **Your DNS is returning a wrong address for Docker Hub**, not a build problem (see "Docker Hub unreachable" below). Check `nslookup registry-1.docker.io` against `nslookup registry-1.docker.io 8.8.8.8`; retry when the answers agree. `SYSTEST_SKIP_BUILD=1` reuses images **built from this exact commit** (it verifies that) |
+| `ERR_PNPM_IGNORED_BUILDS` after adding a dependency                                         | Allow or deny its install script in `pnpm-workspace.yaml` (`allowBuilds`)                                                                                                                                                                                                                                                         |
 
 ## Testing
 
@@ -95,19 +95,38 @@ The worker logs `job completed` with the job id, type and correlation id.
 - **Worker process tests** run the built `apps/worker/dist` (Nx builds it first) and a test-only entry
   (`apps/worker/test/support/stuck-main.ts`) that adds a handler which never ends. The POSIX-only signal tests are listed as
   _skipped_ on Windows and run on Linux.
-- **System tests** (`tests/system`) build the images once (`SYSTEST_SKIP_BUILD=1` reuses them), then each test file starts its own
+- **System tests** (`tests/system`) build the images for the current commit under their own tag (`agentos-*:systest`, never your `agentos-*:local` images, which they never touch), label each image with the commit it was built from and **refuse to run if any image is not from this commit**. `SYSTEST_SKIP_BUILD=1` skips only the build, not that check. They print each image's ID, creation time and revision at the start. Then each test file starts its own
   throwaway Compose project (`agentos-systest-<id>`: own volumes, network, random ports, generated credentials) and removes it
   at the end. They never touch your `agentos` project. They take several minutes. Files:
 
-  | File                           | What it verifies                                                                                                                                                                                                                             |
-  | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `dependencies.system.spec.ts`  | API starts with no dependencies (alive, not ready, leaks nothing), becomes ready when they appear; losing and regaining PostgreSQL / Redis flips readiness and recovers with **no API restart**                                              |
-  | `stack.system.spec.ts`         | Migrate before API; all healthy; loopback-only ports; web -> API proxy; a job processed by the worker container; worker has no DB credentials; **graceful shutdown, every exit code 0**; volumes and data survive `down`                     |
-  | `worker.system.spec.ts`        | Healthy worker; Redis outage: not ready then recovered in the **same process, one connection**; crash -> Docker restart + job recovered; SIGTERM -> exit 0, **not restarted**; forced stop leaves the job unacknowledged and it is recovered |
-  | `worker-config.system.spec.ts` | Invalid configuration: exit 2, **exactly 5 restarts**, then stays down, names the variable, no credential                                                                                                                                    |
-  | `worker-stuck.system.spec.ts`  | A handler that ignores its abort signal, under the real supervisor: restarts are bounded and BullMQ fails the poison job                                                                                                                     |
+  | File                           | What it verifies                                                                                                                                                                                                                                               |
+  | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `dependencies.system.spec.ts`  | API starts with no dependencies (alive, not ready, leaks nothing), becomes ready when they appear; losing and regaining PostgreSQL / Redis flips readiness and recovers with **no API restart**                                                                |
+  | `stack.system.spec.ts`         | Migrate before API; all healthy; loopback-only ports; web -> API proxy; a job processed by the worker container; worker has no DB credentials; **graceful shutdown, every exit code 0**; volumes and data survive `down`                                       |
+  | `worker.system.spec.ts`        | Healthy worker; Redis outage: not ready then recovered in the **same process, one connection**; crash -> Docker restart + job recovered; SIGTERM -> exit 0, **not restarted**; forced stop leaves the job unacknowledged and it is recovered                   |
+  | `worker-config.system.spec.ts` | Invalid configuration: exit 2, **exactly 5 restarts**, then stays down, names the variable, no credential                                                                                                                                                      |
+  | `guards.system.spec.ts`        | The harness's own protections: the isolation guard **aborts before creating anything** for each kind of leaked setting (ports, network, image tag, passwords) and prints no credential; ambient developer variables are neutralized; the image-provenance rule |
+  | `worker-stuck.system.spec.ts`  | A handler that ignores its abort signal, under the real supervisor: restarts are bounded and BullMQ fails the poison job                                                                                                                                       |
 
 - **Do not use `docker kill`/`docker stop` to simulate a crash** in your own tests: Docker treats them as a manual stop and never
   applies the restart policy. Signal the process inside the container (`Stack.signalWorkerProcess`).
 - A failing system test leaves nothing behind (cleanup runs in `afterAll`); if a run is aborted, list leftovers with
   `docker ps -a --filter name=agentos-systest-` and remove only those.
+
+## Docker Hub unreachable: a DNS problem, not a build problem
+
+Symptom: image builds or pulls fail with `DeadlineExceeded` / `dial tcp <ip>:443: i/o timeout` for `registry-1.docker.io`.
+Observed cause on one development machine: the network's own DNS servers intermittently answered `registry-1.docker.io` with
+addresses that are **not** Docker Hub (hosting-provider addresses; reverse DNS `...your-server.de`), while public resolvers always
+returned the real AWS addresses. While such an answer is cached (TTL 60 s) every lookup hangs until BuildKit's deadline, then
+the next answer is fine again, so builds fail "randomly". It is not caused by the Dockerfile, concurrent builds, the syntax
+directive or dependency downloads. Check:
+
+```bash
+nslookup registry-1.docker.io            # your resolver
+nslookup registry-1.docker.io 8.8.8.8    # a public resolver: should be AWS (34.x, 44.x, 52.x, 54.x, ...)
+docker buildx imagetools inspect node:22.14.0-bookworm-slim   # succeeds in about 1-10 s when the registry is reachable
+```
+
+If the answers differ, retry later or use a resolver that does not rewrite them. Changing system or Docker DNS settings is your
+call; this repository does not.
