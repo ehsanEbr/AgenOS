@@ -108,3 +108,29 @@ describe('cycle detection', () => {
     assert.deepEqual(findCycles(graph), [['a', 'b', 'c', 'a']]);
   });
 });
+
+describe('worker layout (apps/worker/src: runtime and processors)', () => {
+  it('accepts processors -> runtime through its public entry (the intended direction)', () => {
+    const dir = fixture({
+      'runtime/index.ts': "export * from './host';",
+      'runtime/host.ts': 'export {};',
+      'processors/index.ts': "import { defineProcessor } from '../runtime';",
+      'main.ts': "import '../runtime';", // files outside any module are not modules
+    });
+    assert.deepEqual(findCycles(buildModuleGraph(dir)), []);
+    assert.deepEqual(analyzeModules(dir).internalImports, []);
+  });
+
+  it('rejects the runtime importing processors (a cycle) and processors reaching into runtime internals', () => {
+    const dir = fixture({
+      'runtime/index.ts': "import '../processors';",
+      'processors/index.ts': "import { x } from '../runtime/registry';",
+      'runtime/registry.ts': 'export {};',
+    });
+    assert.deepEqual(findCycles(buildModuleGraph(dir)), [['processors', 'runtime', 'processors']]);
+    assert.deepEqual(
+      analyzeModules(dir).internalImports.map((i) => `${i.from} -> ${i.to}`),
+      ['processors -> runtime'],
+    );
+  });
+});

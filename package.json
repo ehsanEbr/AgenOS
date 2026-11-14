@@ -8,7 +8,7 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "dev": "nx run-many -t dev --parallel=2",
+    "dev": "nx run-many -t dev --parallel=3",
     "build": "nx run-many -t build",
     "lint": "nx run-many -t lint",
     "typecheck": "nx run-many -t typecheck",
@@ -30,7 +30,7 @@
     "db:migrate": "pnpm --filter @agentos/api db:migrate",
     "db:deploy": "pnpm --filter @agentos/api db:deploy",
     "db:status": "pnpm --filter @agentos/api db:status",
-    "check:architecture": "node tools/check-module-boundaries.mjs && node tools/check-module-boundaries.mjs apps/web/src/features && node --test \"tools/*.test.mjs\""
+    "check:architecture": "node tools/check-module-boundaries.mjs && node tools/check-module-boundaries.mjs apps/web/src/features && node tools/check-module-boundaries.mjs apps/worker/src &&node --test \"tools/*.test.mjs\""
   },
   "devDependencies": {
     "@eslint/js": "^9.30.0",
