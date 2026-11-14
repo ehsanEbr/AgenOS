@@ -2,8 +2,8 @@
 
 AgentOS owns orchestration, intelligence, governance and the execution lifecycle. External LLM providers and agent
 frameworks are replaceable infrastructure behind adapters. Architecture: modular monolith + independent workers,
-TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation phases are complete through **1.4 Frontend Foundation** (see README). Queues, workers and all domain entities are later phases. Rulebooks:
-`docs/architecture/backend.md` (read before touching `apps/api`) and `docs/architecture/frontend.md` (read before touching `apps/web`).
+TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation phases are complete through **1.5 Worker Foundation** (see README). Domain entities, domain jobs and the API enqueuing work are later phases. Rulebooks:
+`docs/architecture/backend.md` (read before touching `apps/api`), `docs/architecture/frontend.md` (read before touching `apps/web`) and `docs/architecture/workers.md` (read before touching `apps/worker`, `packages/queue` or job contracts).
 
 ## Rules (from the architecture spec, section 20)
 
@@ -27,11 +27,12 @@ TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation
   `index.ts`; features do not import each other's internals or form cycles (ESLint + `tools/check-module-boundaries.mjs`).
 - `packages/contracts` depends on `zod` only (no NestJS, React, Prisma, Redis, ...). No Prisma types in contracts.
 - In `apps/api/src/modules`, other modules are imported through their `index.ts` only.
-- `@prisma/client` only inside `modules/database` and a domain module's `infrastructure/` layer; `ioredis` only inside `modules/redis`.
+- `@prisma/client` only inside `modules/database` and a domain module's `infrastructure/` layer; `ioredis` only inside `modules/redis` (API) and `packages/queue`; `bullmq` only in `packages/queue` and `apps/worker/src/runtime` (the API never imports it).
   Domain/application/presentation layers never import drivers. Controllers never touch the database.
 - Backend modules: public API is `index.ts`; no cycles (`tools/check-module-boundaries.mjs`, part of `pnpm lint`); layers point
   presentation -> application -> domain <- infrastructure; infrastructure modules are leaves.
 - Public package entry points only: no `@agentos/x/src/...` imports.
+- `apps/worker`: no NestJS, no Prisma/database (if a job needs the database, stop and write an ADR); `runtime/` never imports `processors/`, `config`, `app` or `main`; processors use the runtime only via `runtime/index.ts` and never import `bullmq`/`ioredis`. Shared backend packages (`config`, `logger`, `queue`) are `scope:backend`: the web app cannot import them.
 
 ## Conventions
 
@@ -57,6 +58,12 @@ Web conventions (details in frontend.md):
 - Use `Page`, `LoadingState`, `EmptyState`, `ErrorState`, `useNotify`; never static `message.xxx()`. Read config via `env`, never `import.meta.env`.
 - Tests query by role/accessible name, use `renderWithProviders`/`renderApp` and contract-typed fixtures; never assert on Ant Design class names.
 
+Worker / job conventions (details in workers.md):
+
+- Delivery is **at-least-once**: every processor must be idempotent and honor `ctx.signal`; throw `PermanentJobError` when retrying cannot help. Never claim exactly-once.
+- Jobs are defined once in `@agentos/contracts` (`defineJob`) and enqueued only through `QueueProducer` (`@agentos/queue`); the worker validates envelope and payload before any handler runs. Never log job payloads.
+- Retry policy lives in code (`packages/queue/src/retry.ts`), not in environment variables.
+
 ## Gotchas
 
 - Apps consume the **built** `packages/contracts`; Nx handles this via `dependsOn: ^build`. When running a tool
@@ -71,6 +78,7 @@ Web conventions (details in frontend.md):
 - Run lint through Nx (`pnpm lint` / `nx lint <project>`). A bare `eslint` run without a cached Nx project graph skips
   `@nx/enforce-module-boundaries` (warning only).
 - TypeScript is pinned to one version (`overrides` in `pnpm-workspace.yaml`); keep root, api and web in sync.
+- Worker integration tests (`pnpm test:integration`) need `pnpm infra:up`; the process-level ones run the **built** `apps/worker/dist` (Nx builds it first). Real SIGTERM/SIGINT tests run on Linux/CI only (Windows Node cannot deliver SIGTERM): use a Linux container locally.
 - Port 5173 may be taken by other local projects; Vite picks another port and prints it.
 - `antd` and `@ant-design/icons` are pinned to exact versions (v6 changed defaults in minor releases): upgrade them together, run the suite, and look at the app in a browser.
 - The earlier Phase 1 build (BullMQ, worker, old compose) lives on branch `phase-1-foundation`.

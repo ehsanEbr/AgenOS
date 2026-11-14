@@ -230,7 +230,7 @@ afterwards. CI generates throwaway passwords, starts the real compose file, and 
 
 See [ADR-0003](../adr/0003-phase-1-2-infrastructure-decisions.md). In short: Prisma lives in `apps/api` with a
 multi-file schema; infrastructure modules are explicit (non-global) imports; the API starts without its dependencies and
-reports readiness; BullMQ will reuse the same Redis but must not share `RedisService`'s client for blocking commands.
+reports readiness; BullMQ reuses the same Redis (workers and producers use their own connections from `@agentos/queue`, never `RedisService`'s client, because workers need blocking commands; see [workers.md](workers.md) and [ADR-0006](../adr/0006-worker-runtime.md)). Queue keys live under the `QUEUE_PREFIX` namespace (default `agentos`); Redis must keep `maxmemory-policy noeviction` (the default).
 
 ## Known limitations
 

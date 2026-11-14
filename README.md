@@ -3,10 +3,11 @@
 Platform for designing, running and observing AI agent systems. See the
 [architecture specification](docs/architecture/technical-architecture-specification.md).
 
-> **Status: foundation phases complete through 1.4 (Frontend Foundation).** The workspace has a themed, bilingual (English/Persian, LTR/RTL) web shell with
+> **Status: foundation phases complete through 1.5 (Worker Foundation).** The workspace has a themed, bilingual (English/Persian, LTR/RTL) web shell with
 > routing, an API client and documented conventions; an API skeleton with module, error, transaction, logging and testing conventions; shared contracts; and local
-> PostgreSQL + Redis infrastructure with Prisma and readiness checks. There are no database tables, queues,
-> workers, authentication or product functionality yet.
+> PostgreSQL + Redis infrastructure with Prisma and readiness checks; and an independent, framework-free worker runtime (BullMQ) with a
+> typed job contract, retries, graceful shutdown and Redis recovery. There are no database tables, domain jobs, authentication
+> or product functionality yet.
 >
 > An earlier, larger Phase 1 build (including a BullMQ worker) is preserved on the git branch `phase-1-foundation`.
 
@@ -23,7 +24,7 @@ pnpm install
 pnpm setup:env      # creates .env with random local passwords (never overwrites an existing .env)
 pnpm infra:up       # starts PostgreSQL + Redis and waits until both are healthy
 pnpm db:deploy      # applies Prisma migrations (none exist yet; safe to run)
-pnpm dev            # builds contracts, then starts the API and the web app
+pnpm dev            # builds shared packages, then starts the API, the worker and the web app
 ```
 
 | What         | URL                                       |
@@ -41,6 +42,7 @@ Start the applications individually:
 ```bash
 pnpm --filter @agentos/contracts build   # once, and after changing contracts
 pnpm --filter @agentos/api dev           # API on :3000 (needs `pnpm infra:up` first)
+pnpm --filter @agentos/worker dev        # worker (needs `pnpm infra:up`); no port, see docs/architecture/workers.md
 pnpm --filter @agentos/web dev           # web on :5173
 ```
 
@@ -58,12 +60,12 @@ details: [docs/architecture/infrastructure.md](docs/architecture/infrastructure.
 
 | Command                   | What it does                                                                                  |
 | ------------------------- | --------------------------------------------------------------------------------------------- |
-| `pnpm dev`                | Start API (watch mode) and web (Vite) in parallel                                             |
-| `pnpm build`              | Generate the Prisma client, then build contracts, API and web                                 |
+| `pnpm dev`                | Start API (watch mode), worker (watch mode) and web (Vite) in parallel                        |
+| `pnpm build`              | Generate the Prisma client, then build the shared packages, API, worker and web               |
 | `pnpm lint`               | ESLint on every project, including the architecture boundary rules                            |
 | `pnpm typecheck`          | `tsc --noEmit` on every project                                                               |
 | `pnpm test`               | Unit and in-process e2e tests (no infrastructure needed)                                      |
-| `pnpm test:integration`   | Tests against real PostgreSQL + Redis (needs `pnpm infra:up`)                                 |
+| `pnpm test:integration`   | Tests against real PostgreSQL + Redis, incl. the worker process (needs `pnpm infra:up`)       |
 | `pnpm verify`             | lint + typecheck + test + build                                                               |
 | `pnpm format`             | Prettier write (`format:check` verifies)                                                      |
 | `pnpm graph`              | Open the Nx project graph                                                                     |
@@ -88,7 +90,11 @@ depend on `^build`, and API tasks also depend on `generate` (Prisma client).
 ```text
 apps/web            React + Vite + Ant Design               scope:web      type:app
 apps/api            NestJS API (+ Prisma schema)            scope:backend  type:app
+apps/worker         Framework-free BullMQ worker host       scope:backend  type:app
 packages/contracts  Zod schemas shared by web and api       scope:shared   type:lib
+packages/config     Env parsing helpers (api, worker)       scope:backend  type:lib
+packages/logger     pino options + redaction (api, worker)  scope:backend  type:lib
+packages/queue      BullMQ/ioredis wrappers, retry policy   scope:backend  type:lib
 infrastructure/     Docker Compose (PostgreSQL, Redis)
 tools/              Small Node scripts (setup:env, guarded data deletion)
 docs/               Architecture specification, notes, ADRs
@@ -96,5 +102,6 @@ docs/               Architecture specification, notes, ADRs
 
 Details: [monorepo.md](docs/architecture/monorepo.md) (workspace and dependency rules),
 [backend.md](docs/architecture/backend.md) (**backend conventions and how to add a domain module**),
-[frontend.md](docs/architecture/frontend.md) (**frontend conventions and how to add a feature**) and
+[frontend.md](docs/architecture/frontend.md) (**frontend conventions and how to add a feature**),
+[workers.md](docs/architecture/workers.md) (**worker runtime, job contract, delivery and shutdown semantics**) and
 [infrastructure.md](docs/architecture/infrastructure.md) (PostgreSQL, Redis, Prisma, health).
