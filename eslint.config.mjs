@@ -55,6 +55,41 @@ const WEB_FORBIDDEN = {
 };
 
 // ---------------------------------------------------------------------------------------------------------
+// apps/web: layers   app -> features -> shared   (arrows mean "may import")
+// ---------------------------------------------------------------------------------------------------------
+
+// `react-router-dom` is the legacy re-export package; import from `react-router`.
+const NO_ROUTER_DOM = {
+  group: ['react-router-dom'],
+  message: 'Import from "react-router" (react-router-dom is the legacy package).',
+};
+// shared/ is the bottom layer: it knows nothing about features or the app shell.
+const SHARED_NO_UPWARD = {
+  regex: '(^|/)(features|app)(/|$)',
+  message:
+    'shared/ must not import from features/ or app/. Shared code cannot depend on the things that depend on it.',
+};
+// features/ may use shared/, never the app layer.
+const FEATURE_NO_APP = {
+  regex: '(^|/)app(/|$)',
+  message: 'features/ must not import from app/. The app composes features, not the other way round.',
+};
+// The app layer reaches a feature only through its public index.ts (never "features/x/components/...").
+const APP_FEATURE_PUBLIC_ONLY = {
+  regex: '(^|/)features/[^/]+/(?!index$).+',
+  message: 'Import a feature through its public entry (features/<name>), not its internal files.',
+};
+const NO_DIRECT_FETCH = {
+  name: 'fetch',
+  message:
+    'Do not call fetch directly. Use apiRequest from shared/api/client (timeouts, cancellation, contract validation).',
+};
+const NO_IMPORT_META_ENV = {
+  selector: "MemberExpression[object.type='MetaProperty'][property.name='env']",
+  message: 'Read configuration through "env" from shared/config/env. Only that file touches import.meta.env.',
+};
+
+// ---------------------------------------------------------------------------------------------------------
 // apps/api: module boundaries
 // ---------------------------------------------------------------------------------------------------------
 
@@ -276,9 +311,42 @@ export default tseslint.config(
     files: ['apps/web/**/*.{ts,tsx}'],
     plugins: { 'react-hooks': reactHooks },
     rules: {
-      'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN),
+      'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN, NO_ROUTER_DOM),
+      'no-restricted-globals': ['error', NO_DIRECT_FETCH],
+      'no-restricted-syntax': ['error', NO_IMPORT_META_ENV],
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
     },
+  },
+  {
+    files: ['apps/web/src/shared/**/*.{ts,tsx}'],
+    ignores: ['**/*.spec.{ts,tsx}'],
+    rules: { 'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN, NO_ROUTER_DOM, SHARED_NO_UPWARD) },
+  },
+  {
+    files: ['apps/web/src/features/**/*.{ts,tsx}'],
+    ignores: ['**/*.spec.{ts,tsx}'],
+    rules: { 'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN, NO_ROUTER_DOM, FEATURE_NO_APP) },
+  },
+  {
+    files: ['apps/web/src/app/**/*.{ts,tsx}'],
+    ignores: ['**/*.spec.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN, NO_ROUTER_DOM, APP_FEATURE_PUBLIC_ONLY),
+    },
+  },
+  {
+    // The API client is the one place allowed to call fetch; env.ts the one place allowed to read import.meta.env.
+    files: ['apps/web/src/shared/api/client.ts'],
+    rules: { 'no-restricted-globals': 'off' },
+  },
+  {
+    files: ['apps/web/src/shared/config/env.ts'],
+    rules: { 'no-restricted-syntax': 'off' },
+  },
+  {
+    // Tests may stub fetch and import across layers (they are not part of the layered architecture).
+    files: ['apps/web/**/*.spec.{ts,tsx}', 'apps/web/src/test/**/*.{ts,tsx}'],
+    rules: { 'no-restricted-globals': 'off', 'no-restricted-syntax': 'off' },
   },
 );
