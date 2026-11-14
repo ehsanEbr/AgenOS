@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -19,10 +19,30 @@ export interface CommandResult {
   stderr: string;
 }
 
+/**
+ * The environment for `docker compose`. Compose gives SHELL environment variables priority over `--env-file`, and task runners
+ * such as Nx load the repository `.env` (the developer's ports and passwords) into every task's environment. Left in place,
+ * those values silently override the throwaway stack's generated ones, so the "isolated" stack would publish on the developer's
+ * ports with the developer's credentials. Every variable the project's configuration defines is therefore removed here.
+ */
+function composeEnvironment(): NodeJS.ProcessEnv {
+  const names = new Set(['AGENTOS_NETWORK', 'DATABASE_URL', 'REDIS_URL']);
+  for (const match of readFileSync(join(REPO_ROOT, '.env.example'), 'utf8').matchAll(
+    /^#?\s*([A-Z][A-Z0-9_]*)=/gm,
+  )) {
+    names.add(match[1] as string);
+  }
+  const clean: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (!names.has(key) && !key.startsWith('COMPOSE_')) clean[key] = value;
+  }
+  return clean;
+}
+
 export function run(
   command: string,
   args: string[],
-  options: { timeoutMs?: number } = {},
+  options: { timeoutMs?: number; env?: NodeJS.ProcessEnv } = {},
 ): Promise<CommandResult> {
   return new Promise((resolveResult) => {
     execFile(
@@ -30,6 +50,7 @@ export function run(
       args,
       {
         cwd: REPO_ROOT,
+        ...(options.env === undefined ? {} : { env: options.env }),
         timeout: options.timeoutMs ?? 300_000,
         maxBuffer: 64 * 1024 * 1024,
         windowsHide: true,
@@ -137,7 +158,42 @@ export class Stack {
         .join('\n')}\n`,
       { mode: 0o600 },
     );
+    await stack.assertIsolated();
     return stack;
+  }
+
+  /**
+   * Fails the run if Compose resolves anything other than the throwaway values this harness generated (ports, network,
+   * credentials, project). A leak from the ambient environment (see composeEnvironment) must stop the test, never run it
+   * against a developer's ports or credentials. Values are never printed.
+   */
+  private async assertIsolated(): Promise<void> {
+    const result = await this.compose(['config', '--format', 'json']);
+    if (result.code !== 0) throw new Error(`compose config failed: ${result.stderr.slice(-500)}`);
+    const config = JSON.parse(result.stdout) as {
+      name?: string;
+      networks?: Record<string, { name?: string }>;
+      services?: Record<
+        string,
+        { environment?: Record<string, string>; ports?: Array<{ published?: string | number }> }
+      >;
+    };
+    const published = (service: string) => String(config.services?.[service]?.ports?.[0]?.published);
+    const problems: string[] = [];
+    if (config.name !== this.project) problems.push('project name');
+    if (config.networks?.['agentos-net']?.name !== `${this.project}-net`) problems.push('network name');
+    if (published('redis') !== String(this.ports.redis)) problems.push('redis port');
+    if (published('postgres') !== String(this.ports.postgres)) problems.push('postgres port');
+    if (published('api') !== String(this.ports.api)) problems.push('api port');
+    if (published('web') !== String(this.ports.web)) problems.push('web port');
+    if (config.services?.redis?.environment?.REDIS_PASSWORD !== this.redisPassword)
+      problems.push('redis password');
+    if (problems.length > 0) {
+      throw new Error(
+        `system-test isolation broken: Compose resolved different ${problems.join(', ')} than the harness generated ` +
+          '(an ambient environment variable is overriding the throwaway configuration)',
+      );
+    }
   }
 
   private composeArgs(args: string[]): string[] {
@@ -158,7 +214,10 @@ export class Stack {
 
   /** Runs `docker compose <args>` for this project. */
   compose(args: string[], timeoutMs?: number): Promise<CommandResult> {
-    return run('docker', this.composeArgs(args), timeoutMs === undefined ? {} : { timeoutMs });
+    return run('docker', this.composeArgs(args), {
+      env: composeEnvironment(),
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    });
   }
 
   /** `compose up -d [--wait]`; throws with the (secret-free) compose output when it fails. */
