@@ -1,16 +1,28 @@
-import { Button, Result } from 'antd';
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
+import { ErrorState } from './states';
 
-interface State {
-  error: Error | null;
+function Fallback({ onReset }: { onReset: () => void }) {
+  const { t } = useTranslation('common');
+  return <ErrorState description={t('boundary.description')} onRetry={onReset} />;
 }
 
-/** Last line of defence: a render error shows a recoverable message instead of a blank page. */
-export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
-  override state: State = { error: null };
+interface Props {
+  children: ReactNode;
+}
+interface State {
+  failed: boolean;
+}
 
-  static getDerivedStateFromError(error: Error): State {
-    return { error };
+/**
+ * Last line of defence for errors thrown while rendering outside the router (providers, the shell itself). Errors inside
+ * routes are handled by the route `errorElement`s instead, which keep the navigation visible.
+ */
+export class ErrorBoundary extends Component<Props, State> {
+  override state: State = { failed: false };
+
+  static getDerivedStateFromError(): State {
+    return { failed: true };
   }
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
@@ -18,14 +30,7 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
   }
 
   override render(): ReactNode {
-    if (!this.state.error) return this.props.children;
-    return (
-      <Result
-        status="error"
-        title="Something went wrong"
-        subTitle="The page hit an unexpected error."
-        extra={<Button onClick={() => this.setState({ error: null })}>Try again</Button>}
-      />
-    );
+    if (!this.state.failed) return this.props.children;
+    return <Fallback onReset={() => this.setState({ failed: false })} />;
   }
 }
