@@ -1,4 +1,6 @@
-# syntax=docker/dockerfile:1.7
+# No "# syntax=docker/dockerfile:..." directive on purpose: it makes every build download a separate frontend image from the
+# registry first, and a slow registry then fails the build ("DeadlineExceeded") before a single step runs. The built-in frontend
+# of any current BuildKit supports everything used here (`RUN --mount=type=cache`).
 #
 # AgentOS application images for the LOCAL STACK and for system tests (`pnpm stack:up`, `pnpm test:system`).
 # One build, three runtime targets: `api`, `worker`, `web`.
