@@ -2,11 +2,21 @@ import { defineJob } from '@agentos/contracts';
 import type { Logger } from '@agentos/logger';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { type JobLike, JobFailure, createDispatcher } from './dispatch';
+import { type JobLike, JobFailure, type StuckHandlerInfo, createDispatcher } from './dispatch';
 import { type JobContext, PermanentJobError, defineProcessor } from './processor';
 import { ProcessorRegistry } from './registry';
 
 const SECRET = 'hunter2-payload-secret';
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+/** Lets already-queued promise callbacks run (a yield to the event loop, not a timing assumption). */
+const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const echoJob = defineJob({
   queue: 'system',
@@ -48,11 +58,18 @@ const job = (data: unknown, extra: Partial<JobLike> = {}): JobLike => ({
 function setup(
   handler: (payload: { text: string; count: number }, ctx: JobContext) => unknown = () => undefined,
   jobTimeoutMs = 1_000,
+  extra: Partial<Parameters<typeof createDispatcher>[0]> = {},
 ) {
   const registry = new ProcessorRegistry().register(defineProcessor(echoJob, handler as never));
   const shutdown = new AbortController();
   const { logger, calls } = fakeLogger();
-  const dispatch = createDispatcher({ registry, logger, jobTimeoutMs, shutdownSignal: shutdown.signal });
+  const dispatch = createDispatcher({
+    registry,
+    logger,
+    jobTimeoutMs,
+    shutdownSignal: shutdown.signal,
+    ...extra,
+  });
   return { dispatch, calls, shutdown };
 }
 
@@ -225,17 +242,117 @@ describe('handler failures are classified', () => {
 });
 
 describe('timeout and shutdown', () => {
-  it('abandons a handler that exceeds the timeout, aborts its signal and classifies it as a retryable timeout', async () => {
+  it('aborts the signal at the timeout but does NOT give up on a handler that ignores it: the attempt ends when the handler does', async () => {
+    const release = deferred();
+    const aborted = deferred();
     let seenSignal: AbortSignal | undefined;
-    const { dispatch, calls } = setup((_payload, ctx) => {
+    const { dispatch, calls } = setup(async (_payload, ctx) => {
       seenSignal = ctx.signal;
-      return new Promise(() => undefined); // never settles, and ignores the signal
+      ctx.signal.addEventListener('abort', () => aborted.resolve());
+      await release.promise; // ignores the signal
     }, 30);
 
-    const failure = await failureOf(dispatch(job(envelope())));
-    expect(failure).toMatchObject({ failureClass: 'timeout', reason: 'timeout' });
+    let settled = false;
+    const outcome = failureOf(dispatch(job(envelope())));
+    void outcome.then(() => (settled = true));
+    await aborted.promise; // the timeout fired
+    await tick();
     expect(seenSignal?.aborted).toBe(true);
-    expect(calls.at(-1)?.fields).toMatchObject({ failureClass: 'timeout', willRetry: true });
+    expect(settled).toBe(false); // still pending: BullMQ has not been told anything, so it cannot retry yet
+
+    release.resolve(); // the handler really ends (successfully, but late)
+    const failure = await outcome;
+    expect(failure).toMatchObject({ failureClass: 'timeout', reason: 'timeout' });
+    expect(calls.at(-1)?.fields).toMatchObject({
+      failureClass: 'timeout',
+      willRetry: true,
+      lateOutcome: 'resolved',
+    });
+  });
+
+  it.each([
+    ['an ordinary error', new Error('boom'), 'timeout'],
+    ['a PermanentJobError', new PermanentJobError('gone'), 'timeout'],
+  ] as const)(
+    'a handler that fails with %s after its timeout is still a retryable timeout',
+    async (_name, error, expectedClass) => {
+      const release = deferred();
+      const aborted = deferred();
+      const { dispatch, calls } = setup(async (_payload, ctx) => {
+        ctx.signal.addEventListener('abort', () => aborted.resolve());
+        await release.promise;
+        throw error;
+      }, 30);
+      const outcome = failureOf(dispatch(job(envelope())));
+      await aborted.promise;
+      release.resolve();
+      expect(await outcome).toMatchObject({ failureClass: expectedClass, reason: 'timeout' });
+      expect(calls.at(-1)?.fields).toMatchObject({ willRetry: true, lateOutcome: 'rejected' });
+    },
+  );
+
+  it('reports a handler that is still running abortGraceMs after the timeout, once, and keeps holding the job', async () => {
+    const release = deferred();
+    const stuck = deferred<StuckHandlerInfo>();
+    const onStuckHandler = vi.fn((info: StuckHandlerInfo) => stuck.resolve(info));
+    const { dispatch, calls } = setup(() => release.promise, 20, { abortGraceMs: 20, onStuckHandler });
+
+    let settled = false;
+    const outcome = failureOf(dispatch(job(envelope(), { id: '42' })));
+    void outcome.then(() => (settled = true));
+
+    expect(await stuck.promise).toMatchObject({
+      jobId: '42',
+      queue: 'system',
+      type: 'test.echo',
+      attempt: 1,
+    });
+    await tick();
+    expect(settled).toBe(false); // reported, but never released
+    expect(calls.some((c) => c.level === 'error' && c.msg.includes('ignored its abort signal'))).toBe(true);
+
+    release.resolve();
+    await outcome;
+    expect(onStuckHandler).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not report a handler that ends within the abort grace period, and survives a throwing callback', async () => {
+    const notExpected = vi.fn();
+    const cooperative = setup(
+      (_payload, ctx) =>
+        new Promise((_resolve, reject) =>
+          ctx.signal.addEventListener('abort', () => reject(ctx.signal.reason)),
+        ),
+      20,
+      { abortGraceMs: 5_000, onStuckHandler: notExpected },
+    );
+    await failureOf(cooperative.dispatch(job(envelope())));
+    expect(notExpected).not.toHaveBeenCalled(); // it stopped promptly
+
+    const release = deferred();
+    const onStuckHandler = vi.fn(() => {
+      release.resolve(); // let the handler end as soon as it has been reported...
+      throw new Error('callback bug'); // ...and make the callback fail
+    });
+    const faulty = setup(() => release.promise, 20, { abortGraceMs: 20, onStuckHandler });
+    expect(await failureOf(faulty.dispatch(job(envelope())))).toMatchObject({ failureClass: 'timeout' });
+    expect(onStuckHandler).toHaveBeenCalledTimes(1); // it threw, and dispatch still completed normally
+  });
+
+  it('a force-stop after the timeout releases the dispatcher even though the handler never ends', async () => {
+    const aborted = deferred();
+    const { dispatch, shutdown } = setup(
+      (_payload, ctx) => {
+        ctx.signal.addEventListener('abort', () => aborted.resolve());
+        return new Promise(() => undefined);
+      },
+      20,
+      { abortGraceMs: 60_000 },
+    );
+    const outcome = failureOf(dispatch(job(envelope())));
+    await aborted.promise; // timed out; the handler ignores it
+    shutdown.abort(new Error('worker is shutting down'));
+    expect(await outcome).toMatchObject({ failureClass: 'aborted', reason: 'shutdown' });
   });
 
   it('lets a cooperative handler observe the abort and stop', async () => {

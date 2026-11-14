@@ -3,7 +3,7 @@ import type { QueueName } from '@agentos/contracts';
 import type { Logger } from '@agentos/logger';
 import { type Redis, createRedisConnection } from '@agentos/queue';
 import { UnrecoverableError, Worker } from 'bullmq';
-import { type JobLike, JobFailure, createDispatcher } from './dispatch';
+import { type JobLike, JobFailure, type StuckHandlerInfo, createDispatcher } from './dispatch';
 import { type HostState, Lifecycle } from './lifecycle';
 import type { ProcessorRegistry } from './registry';
 import { TimeoutError, settlesWithin, withTimeout } from './util';
@@ -20,8 +20,21 @@ export interface WorkerHostOptions {
   logger: Logger;
   /** Jobs processed in parallel PER QUEUE. */
   concurrency: number;
-  /** A handler that does not finish in this time is abandoned and the attempt counts as failed (retried). */
+  /**
+   * A handler that does not finish in this time has its signal aborted and the attempt will count as failed (retried) as soon
+   * as the handler ends. The runtime NEVER retries while the handler may still be running: see `abortGraceMs`.
+   */
   jobTimeoutMs: number;
+  /**
+   * How long a handler may keep running after its timeout fired (its signal is aborted) before the runtime reports it as stuck.
+   * Default 10 s. A stuck handler keeps its slot and its job; it is never overlapped by a retry.
+   */
+  abortGraceMs?: number;
+  /**
+   * Called when a handler is stuck (see `abortGraceMs`). The only reliable remedy is to stop the PROCESS, so the worker entry
+   * point shuts the host down and exits; an embedder that does not do something equivalent keeps a permanently occupied slot.
+   */
+  onStuckHandler?: (info: StuckHandlerInfo) => void;
   /** How long shutdown waits for active jobs before abandoning them. */
   shutdownGraceMs: number;
   /** How long a job's lock lasts without renewal; a crashed worker's jobs are redelivered after about this long. */
@@ -132,6 +145,8 @@ export class WorkerHost {
       logger: log,
       jobTimeoutMs: options.jobTimeoutMs,
       shutdownSignal: this.shutdownController.signal,
+      ...(options.abortGraceMs === undefined ? {} : { abortGraceMs: options.abortGraceMs }),
+      ...(options.onStuckHandler === undefined ? {} : { onStuckHandler: options.onStuckHandler }),
     });
     this.workers = options.queues.map((queue) => this.createWorker(queue, dispatch, connection));
 

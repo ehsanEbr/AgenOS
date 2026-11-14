@@ -7,7 +7,7 @@ import type { z } from 'zod';
  *
  * Delivery is AT-LEAST-ONCE, never exactly-once. A handler can run more than once for the same job when:
  *   - the worker process crashed (or was force-stopped) while the job was active: the job is redelivered after its lock expires;
- *   - the job exceeded its timeout: it is retried while the first execution may still be running;
+ *   - the job exceeded its timeout: it is retried, but only after the first execution has ENDED (never beside it);
  *   - the handler failed with a retryable error and the job is retried (that is the point of retries);
  *   - a producer enqueued the same operation twice under different job ids.
  *
@@ -17,7 +17,9 @@ import type { z } from 'zod';
  *   - make the effect conditional on it: an upsert, a unique constraint, "UPDATE ... WHERE status = 'queued'",
  *     a compare-and-set on a state column, or a record of completed steps;
  *   - external calls that are not naturally idempotent need the provider's idempotency key (pass `ctx.jobId`);
- *   - check `ctx.signal`: when it aborts (timeout or forced shutdown) stop doing new work promptly.
+ *   - check `ctx.signal`: when it aborts (timeout or forced shutdown) stop promptly. Aborting does NOT stop a function. A handler
+ *     that ignores the signal keeps its slot and its job, is never retried beside itself, and after WORKER_ABORT_GRACE_MS the
+ *     worker process restarts to get rid of it. Never block the event loop for long (a synchronous loop cannot be timed out).
  * `ctx.attempt` tells you this is a retry (diagnostics only, never use it to decide whether work was already done).
  *
  * Failing: throw any Error for a RETRYABLE failure (a dependency was down). Throw `PermanentJobError` when retrying can

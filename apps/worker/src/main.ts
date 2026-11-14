@@ -40,19 +40,27 @@ async function main(): Promise<void> {
     'worker starting',
   );
 
-  const host = createWorkerHost(config, logger);
-
   // Signals are handled from the very first moment, so a SIGTERM during startup also shuts down cleanly.
   let shuttingDown = false;
-  const shutdown = async (signal: string): Promise<void> => {
+  const shutdown = async (signal: string, alwaysFail = false): Promise<void> => {
     if (shuttingDown) {
       logger.warn({ signal }, 'second signal received; exiting immediately');
       process.exit(EXIT.failure);
     }
     shuttingDown = true;
     const result = await host.stop(signal);
-    process.exit(result.forced ? EXIT.failure : EXIT.ok);
+    process.exit(result.forced || alwaysFail ? EXIT.failure : EXIT.ok);
   };
+  // A handler that ignores its AbortSignal cannot be stopped from inside the process, and the runtime refuses to retry its job
+  // beside it. Restarting the process is the one thing that really ends it: shut down (other jobs get the grace period; the
+  // stuck job is left unacknowledged and is redelivered after its lock expires) and exit non-zero for the supervisor.
+  const host = createWorkerHost(config, logger, {
+    onStuckHandler: (info) => {
+      logger.fatal({ ...info }, 'a handler is stuck after its timeout; restarting the worker process');
+      if (!shuttingDown) void shutdown('stuck-handler', true); // always a failure exit: something is wrong with a processor
+    },
+  });
+
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
   process.on('SIGINT', () => void shutdown('SIGINT'));
 

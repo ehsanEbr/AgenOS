@@ -140,20 +140,7 @@ describe('failure handling and retries', () => {
     });
   });
 
-  it('times out a handler that does not finish, aborts its signal, and counts the attempt as failed', async () => {
-    await h.startHost({ jobTimeoutMs: 300 });
-    const { jobId } = await h.producer.enqueue(
-      testJobs.never,
-      {},
-      { retry: { attempts: 2, backoffMs: 100, jitter: 0 } },
-    );
-    await untilState(jobId, 'failed');
-
-    expect(h.controls.executionsOf(jobId)).toHaveLength(2);
-    expect(h.controls.abortedJobs.has(jobId)).toBe(true);
-    const timeouts = h.logsWhere((l) => l.jobId === jobId && l.failureClass === 'timeout');
-    expect(timeouts.map((l) => l.willRetry)).toEqual([true, false]);
-  });
+  // Timeouts (a handler that respects its signal, one that ignores it, late results, shutdown) are covered in timeout.int.spec.ts.
 
   it('keeps processing other jobs while one job fails repeatedly', async () => {
     await h.startHost();

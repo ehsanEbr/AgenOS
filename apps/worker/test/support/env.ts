@@ -40,6 +40,24 @@ export async function waitFor<T>(
   );
 }
 
+/**
+ * The mirror of `waitFor`, for "this must NOT happen". Absence cannot be observed without a time window, so this is the one
+ * bounded wait in the suite: it polls `check` for `durationMs` and fails the moment it is false. A passing run always takes the
+ * full window; a regression fails as soon as it shows. Keep the window short and use it only where no event can be awaited.
+ */
+export async function staysTrue(
+  check: () => boolean | Promise<boolean>,
+  durationMs: number,
+  message = 'invariant',
+  intervalMs = 20,
+): Promise<void> {
+  const deadline = Date.now() + durationMs;
+  do {
+    if (!(await check())) throw new Error(`Invariant violated: ${message}`);
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  } while (Date.now() < deadline);
+}
+
 export interface Deferred<T = void> {
   promise: Promise<T>;
   resolve: (value: T) => void;

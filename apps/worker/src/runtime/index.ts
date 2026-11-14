@@ -5,6 +5,8 @@ export {
   type FailureReason,
   JobFailure,
   type JobLike,
+  type StuckHandlerInfo,
+  DEFAULT_ABORT_GRACE_MS,
   createDispatcher,
 } from './dispatch';
 export {

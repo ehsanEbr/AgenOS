@@ -44,8 +44,13 @@ export const workerEnvSchema = z.object({
   ),
   /** Jobs processed in parallel, per queue. */
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(100).default(5),
-  /** A handler that runs longer than this is abandoned and the attempt is retried. */
+  /** A handler that runs longer than this gets its AbortSignal aborted; the attempt is retried once the handler has ended. */
   WORKER_JOB_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(3_600_000).default(60_000),
+  /**
+   * How long a handler may keep running after its timeout before the worker concludes it is stuck, shuts down and exits (code 1)
+   * so a supervisor restarts it. Nothing else can stop a handler that ignores its AbortSignal.
+   */
+  WORKER_ABORT_GRACE_MS: z.coerce.number().int().min(100).max(600_000).default(10_000),
   /** On SIGTERM/SIGINT: how long to wait for running jobs before abandoning them. Keep it below the orchestrator's kill timeout. */
   WORKER_SHUTDOWN_GRACE_MS: z.coerce.number().int().min(0).max(600_000).default(30_000),
   /** Give up starting (exit code 1) if Redis is not usable within this time. After startup, Redis outages are survived. */
