@@ -1,4 +1,4 @@
-﻿packages:
+packages:
   - apps/*
   - packages/*
 
@@ -11,6 +11,7 @@ allowBuilds:
   esbuild: true # tsup and Vite
   nx: true
   '@scarf/scarf': false # telemetry only
+  msgpackr-extract: false # optional native speedup for BullMQ; it falls back to pure JS
 
 # Keep a single TypeScript version across the workspace. Without this, @nestjs/cli and tsup resolve their own
 # TypeScript 5.9.x for `nest build` / d.ts generation while typecheck uses 5.8.x.
