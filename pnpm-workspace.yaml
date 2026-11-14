@@ -1,9 +1,12 @@
-packages:
+﻿packages:
   - apps/*
   - packages/*
 
 # pnpm blocks dependency install scripts by default; allow only what the build needs.
 allowBuilds:
+  '@prisma/client': true # generates/locates the Prisma Client
+  '@prisma/engines': true # downloads the Prisma query/schema engines
+  prisma: true
   '@swc/core': true # Vitest decorator-metadata transform for the NestJS API tests
   esbuild: true # tsup and Vite
   nx: true

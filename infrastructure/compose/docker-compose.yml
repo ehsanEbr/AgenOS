@@ -1,0 +1,61 @@
+# AgentOS development infrastructure: PostgreSQL (source of truth) and Redis (cache / ephemeral state).
+#
+# Run through the root scripts, which pass the repository-level .env file:
+#   pnpm setup:env && pnpm infra:up
+#
+# Credentials come from .env and have no defaults on purpose. Published ports are bound to 127.0.0.1 only,
+# so the services are reachable from this machine and nowhere else.
+
+name: agentos
+
+services:
+  postgres:
+    # pgvector image: the specification selects pgvector for semantic search (enabled in a later phase).
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-agentos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - run "pnpm setup:env"}
+      POSTGRES_DB: ${POSTGRES_DB:-agentos}
+    ports:
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [agentos-net]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required - run "pnpm setup:env"}
+    # AOF + periodic snapshot so a dev restart keeps data. Redis is still a cache / ephemeral-state store,
+    # never the source of truth (ADR-004).
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --save 60 1 --requirepass "$$REDIS_PASSWORD"
+    ports:
+      - '127.0.0.1:${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis-data:/data
+    networks: [agentos-net]
+    healthcheck:
+      # REDISCLI_AUTH keeps the password off the process command line.
+      test: ['CMD-SHELL', 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  agentos-net:
+    name: agentos-net
+
+volumes:
+  postgres-data:
+  redis-data:

@@ -2,7 +2,12 @@ node_modules
 dist
 coverage
 .nx
-.env
-.env.local
 *.tsbuildinfo
 .DS_Store
+
+# Local secrets: never commit. Only the *.example templates are tracked.
+.env
+.env.*
+!.env.example
+*.pem
+*.key

@@ -14,9 +14,22 @@
     "typecheck": "nx run-many -t typecheck",
     "test": "nx run-many -t test",
     "verify": "nx run-many -t lint typecheck test build",
+    "test:integration": "nx run-many -t test:integration",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "graph": "nx graph"
+    "graph": "nx graph",
+    "setup:env": "node tools/setup-env.mjs",
+    "infra:config": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml config --quiet",
+    "infra:up": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml up -d --wait",
+    "infra:down": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml down",
+    "infra:ps": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml ps",
+    "infra:logs": "docker compose --env-file .env -f infrastructure/compose/docker-compose.yml logs -f --tail=100",
+    "infra:destroy-data": "node tools/confirm-destroy.mjs && docker compose --env-file .env -f infrastructure/compose/docker-compose.yml down --volumes",
+    "db:generate": "pnpm --filter @agentos/api generate",
+    "db:validate": "pnpm --filter @agentos/api db:validate",
+    "db:migrate": "pnpm --filter @agentos/api db:migrate",
+    "db:deploy": "pnpm --filter @agentos/api db:deploy",
+    "db:status": "pnpm --filter @agentos/api db:status"
   },
   "devDependencies": {
     "@eslint/js": "^9.30.0",
