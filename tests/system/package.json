@@ -1,0 +1,35 @@
+{
+  "name": "@agentos/system-tests",
+  "version": "0.1.0",
+  "private": true,
+  "description": "System-level tests: the full Docker Compose stack (web, api, worker, PostgreSQL, Redis) as a black box",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test:system": "vitest run --config vitest.config.ts"
+  },
+  "nx": {
+    "tags": [
+      "type:app",
+      "scope:backend"
+    ],
+    "targets": {
+      "test:system": {
+        "dependsOn": [
+          "^build"
+        ],
+        "cache": false
+      }
+    }
+  },
+  "dependencies": {
+    "@agentos/contracts": "workspace:*",
+    "@agentos/queue": "workspace:*",
+    "bullmq": "5.76.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "typescript": "~5.8.3",
+    "vitest": "^3.2.0"
+  }
+}
