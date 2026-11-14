@@ -2,8 +2,8 @@
 
 AgentOS owns orchestration, intelligence, governance and the execution lifecycle. External LLM providers and agent
 frameworks are replaceable infrastructure behind adapters. Architecture: modular monolith + independent workers,
-TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation phases are complete through **1.5 Worker Foundation** (see README). Domain entities, domain jobs and the API enqueuing work are later phases. Rulebooks:
-`docs/architecture/backend.md` (read before touching `apps/api`), `docs/architecture/frontend.md` (read before touching `apps/web`) and `docs/architecture/workers.md` (read before touching `apps/worker`, `packages/queue` or job contracts).
+TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation phases are complete through **1.6 System Integration & CI** (see README). Domain entities, domain jobs and the API enqueuing work are later phases. Rulebooks:
+`docs/architecture/backend.md` (read before touching `apps/api`), `docs/architecture/frontend.md` (read before touching `apps/web`) `docs/architecture/workers.md` (read before touching `apps/worker`, `packages/queue` or job contracts) and `docs/architecture/docker-compose.md` (read before touching Docker, Compose or process lifecycle/health).
 
 ## Rules (from the architecture spec, section 20)
 
@@ -64,6 +64,13 @@ Worker / job conventions (details in workers.md):
 - Jobs are defined once in `@agentos/contracts` (`defineJob`) and enqueued only through `QueueProducer` (`@agentos/queue`); the worker validates envelope and payload before any handler runs. Never log job payloads.
 - Retry policy lives in code (`packages/queue/src/retry.ts`), not in environment variables.
 
+System / infrastructure conventions (details in docker-compose.md, ci.md, environment.md):
+
+- Every environment variable is declared in the app's config schema, documented in `.env.example` and, if containers need it, passed by Compose; `pnpm check:env` (part of `check:architecture`) fails on drift. Only `api` and `migrate` get database credentials; the worker never does.
+- Services exit 0 on a clean shutdown. A worker that must be restarted exits non-zero and relies on the Compose restart policy (`on-failure:5`); **`docker stop`/`docker kill` are manual stops and never trigger it**, so signal the process inside the container when testing restarts.
+- System tests (`tests/system`) use throwaway Compose projects named `agentos-systest-<id>` and never touch the developer's `agentos` project; never add a code path that deletes volumes of any other project.
+- CI: one required status (`CI result`); every job calls a root script, so what CI runs is what you run. Do not add `continue-on-error`.
+
 ## Gotchas
 
 - Apps consume the **built** `packages/contracts`; Nx handles this via `dependsOn: ^build`. When running a tool
@@ -79,6 +86,8 @@ Worker / job conventions (details in workers.md):
   `@nx/enforce-module-boundaries` (warning only).
 - TypeScript is pinned to one version (`overrides` in `pnpm-workspace.yaml`); keep root, api and web in sync.
 - Worker integration tests (`pnpm test:integration`) need `pnpm infra:up`; the process-level ones run the **built** `apps/worker/dist` (Nx builds it first). Real SIGTERM/SIGINT tests run on Linux/CI only (Windows Node cannot deliver SIGTERM): use a Linux container locally.
+- `pnpm stack:down` also stops the infrastructure containers (data volumes are kept); run `pnpm infra:up` afterwards. Never run `pnpm infra:destroy-data` without the user's explicit approval.
+- Git Bash rewrites `docker run -w /path`: prefix with `MSYS_NO_PATHCONV=1`. On Windows use `localhost` (not `127.0.0.1`) for the Vite dev server.
 - Port 5173 may be taken by other local projects; Vite picks another port and prints it.
 - `antd` and `@ant-design/icons` are pinned to exact versions (v6 changed defaults in minor releases): upgrade them together, run the suite, and look at the app in a browser.
 - The earlier Phase 1 build (BullMQ, worker, old compose) lives on branch `phase-1-foundation`.

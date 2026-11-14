@@ -25,6 +25,10 @@ Queues, workers, schedulers and every domain entity are **out of scope** and arr
   `infrastructure/` layer of domain modules (enforced by ESLint, see [backend.md](backend.md)). Nothing in `packages/contracts` or
   `apps/web` knows about them.
 
+> **Phase 1.6:** the applications (web, api, worker) and a one-shot `migrate` service were added to the same Compose file behind the
+> `app` profile; `pnpm infra:up` still starts only PostgreSQL and Redis. See [docker-compose.md](docker-compose.md) and
+> [system-overview.md](system-overview.md). `AGENTOS_NETWORK` (default `agentos-net`) lets throwaway test stacks use their own network.
+
 ## Environment setup
 
 ```bash
@@ -176,7 +180,7 @@ apps/api/src/modules/
   API **still starts**, logs one warning (error class only, never connection strings) and reports `not_ready`. Both
   drivers reconnect lazily/in the background, so the API recovers on its own when the dependency returns (verified by
   stopping and restarting each container while the API ran).
-- _Shutdown_: `app.enableShutdownHooks()` makes SIGTERM/SIGINT call `onModuleDestroy`. Prisma calls `$disconnect()`
+- _Shutdown_: `main.ts` calls `app.close()` on SIGTERM/SIGINT, which runs `onModuleDestroy`, and then exits 0. Prisma calls `$disconnect()`
   (a failure is logged and ignored so shutdown always completes); Redis calls `QUIT` when connected and a hard
   `disconnect()` otherwise, so shutdown never hangs on a dead connection.
 - Redis connection errors are logged once per outage, not once per retry.

@@ -55,9 +55,12 @@ Solid arrows are implemented; dashed arrows and the API/scheduler producers are 
 
 ```text
 apps/worker/src
-├─ main.ts            process entry: load config, create host, signal handlers, exit codes
+├─ main.ts            production entry: three lines, `runWorker({ registry: createRegistry() })`
+├─ run.ts             the process: load config, create host, signal handlers, health file, exit codes (tests call it with their own registry)
 ├─ app.ts             composition: config + registry -> WorkerHost
 ├─ config.ts          worker environment (validated at startup)
+├─ health.ts          heartbeat file writer + the rule that judges it (see docker-compose.md)
+├─ healthcheck.ts     `node dist/healthcheck.js`: the container health probe (exit 0 = ready)
 ├─ runtime/           the worker host. Generic: knows no job. No NestJS, no database.
 │   ├─ host.ts        WorkerHost: lifecycle, Redis connection, BullMQ workers, graceful shutdown
 │   ├─ dispatch.ts    one delivered job -> validate -> find processor -> run with timeout -> classified result
@@ -231,12 +234,15 @@ process without isolation, so this design gives up the _promptness_ of the retry
 - **Operationally:** a handler that ignores its signal reduces the worker's capacity (it keeps a slot) and delays that job's
   retry until it ends; one that never ends costs a worker restart (about `WORKER_JOB_TIMEOUT_MS + WORKER_ABORT_GRACE_MS`, plus up
   to `WORKER_SHUTDOWN_GRACE_MS` for other jobs, plus the lock duration before redelivery). A job that does this twice is failed by
-  BullMQ's stalled-job limit (`maxStalledCount: 1`), so a poison job cannot restart workers forever. A restarting worker needs
-  a supervisor (Docker `restart`, systemd, Kubernetes), which any production worker needs anyway. Choose
+  BullMQ's stalled-job limit (`maxStalledCount: 1`), so a poison job cannot restart workers forever (verified end to end under
+  the Docker restart policy: two restarts, job `failed`, worker healthy again). A restarting worker needs
+  a supervisor (Docker `restart`, systemd, Kubernetes), which any production worker needs anyway; the local stack provides one
+  ([docker-compose.md](docker-compose.md#supervision-what-restarts-the-worker-and-what-does-not)). Choose
   `WORKER_JOB_TIMEOUT_MS` above the longest legitimate run, and make processors honor the signal so none of this happens.
-- The worker entry point's reaction to a stuck handler (shut down, exit 1) is covered by a host-level test of the callback and
-  by the shutdown tests, but **not by a process-level test**: the real worker only registers `system.ping`, which honors its
-  signal, and a test-only misbehaving processor is deliberately not part of the production registry.
+- The worker entry point's reaction to a stuck handler (shut down, exit 1, job left unacknowledged) **is** covered at process
+  level: `test/supervision.int.spec.ts` runs the real `runWorker` with a test-only processor that never ends
+  (`test/support/stuck-main.ts`; the shipped registry deliberately contains no misbehaving processor), and
+  `tests/system/test/worker-stuck.system.spec.ts` runs it in the container image under the real restart policy.
 
 ## Lifecycle
 
@@ -316,6 +322,7 @@ Read once at startup by `apps/worker/src/config.ts` using `@agentos/config`. Def
 | `WORKER_QUEUES`             | `system`  | Comma-separated, validated against the known queues                                                  |
 | `WORKER_CONCURRENCY`        | 5         | Parallel jobs **per queue** (1-100)                                                                  |
 | `WORKER_JOB_TIMEOUT_MS`     | 60000     | Per-attempt limit (1 s - 1 h): aborts the handler's signal; the retry waits for the handler to end   |
+| `WORKER_HEALTH_FILE`        | unset     | Heartbeat file for the container health check; unset disables health reporting                       |
 | `WORKER_ABORT_GRACE_MS`     | 10000     | How long a handler may ignore its aborted signal before the worker restarts itself (100 ms - 10 min) |
 | `WORKER_SHUTDOWN_GRACE_MS`  | 30000     | Drain time on SIGTERM/SIGINT (0 - 10 min)                                                            |
 | `WORKER_STARTUP_TIMEOUT_MS` | 30000     | Give up starting if Redis is unusable                                                                |
@@ -381,6 +388,8 @@ a container to exercise graceful shutdown by hand.
 | Contracts, config, logger, queue, worker unit tests | `pnpm test`             | No          | Envelope validation, registry, failure classification, retry policy/options, lifecycle transitions, config validation, secret redaction                                                                                                                           |
 | Worker host integration                             | `pnpm test:integration` | Yes         | Real Redis: success, retry, exhaustion, permanent failure, malformed jobs, concurrency, de-duplication, duplicate delivery, graceful and forced shutdown, recovery by another worker, Redis outage and recovery (via a TCP proxy), startup failure with redaction |
 | Worker process integration                          | `pnpm test:integration` | Yes         | The built `dist/main.js` as an OS process: exit codes 0/1/2, real SIGTERM and SIGINT (POSIX only), second signal, SIGKILL recovery                                                                                                                                |
+| Worker supervision integration                      | `pnpm test:integration` | Yes         | Timeouts in the real process (cooperative; non-cooperative -> abort-grace path, exit 1), the health heartbeat as a supervisor sees it (stale "ready" after a kill is not trusted; draining is not ready)                                                          |
+| System (Docker stack)                               | `pnpm test:system`      | Docker      | Restart policy, health, shutdown, persistence and dependency loss for the containers: [development.md](development.md#testing)                                                                                                                                    |
 
 Integration tests use logical database 15 and a unique queue prefix per test, delete their keys, and synchronize on conditions
 (job state in Redis, events from handlers, log lines) rather than fixed sleeps. Signal tests are skipped on Windows (stated in
@@ -388,9 +397,10 @@ the test output) and run in CI (Ubuntu) and in any Linux container; they are not
 
 ## Limitations and known gaps
 
-- **No health endpoint.** Readiness is observable in-process (`host.status()`) and via the `worker ready` log line and the named
-  connection in Redis. A liveness/readiness mechanism for orchestrators (probe file, tiny socket) is a decision for the
-  deployment phase; no HTTP server was added just for health.
+- **No health endpoint, by decision.** Readiness is observable in-process (`host.status()`), through the `worker ready` log line
+  and, for supervisors, through a heartbeat file judged by `healthcheck.js` (pid alive, heartbeat fresh, state running and Redis
+  connected; shutting down is never ready). It is only observable inside the container, and Docker marks the container
+  `unhealthy` without restarting it. See [docker-compose.md](docker-compose.md#worker-health-and-readiness).
 - **Redis is the queue, not the source of truth.** If Redis loses data (it persists with AOF + snapshots in compose, but a
   managed Redis may not), queued jobs are lost. Enqueueing after a database commit can also be lost between the two writes. The
   transactional outbox that closes this gap is a later phase; until then do not queue work that cannot be re-derived.

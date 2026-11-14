@@ -3,11 +3,12 @@
 Platform for designing, running and observing AI agent systems. See the
 [architecture specification](docs/architecture/technical-architecture-specification.md).
 
-> **Status: foundation phases complete through 1.5 (Worker Foundation).** The workspace has a themed, bilingual (English/Persian, LTR/RTL) web shell with
+> **Status: foundation phases complete through 1.6 (System Integration & CI).** The workspace has a themed, bilingual (English/Persian, LTR/RTL) web shell with
 > routing, an API client and documented conventions; an API skeleton with module, error, transaction, logging and testing conventions; shared contracts; and local
 > PostgreSQL + Redis infrastructure with Prisma and readiness checks; and an independent, framework-free worker runtime (BullMQ) with a
-> typed job contract, retries, graceful shutdown and Redis recovery. There are no database tables, domain jobs, authentication
-> or product functionality yet.
+> typed job contract, retries, graceful shutdown and Redis recovery. The whole system runs in containers (Docker Compose) with a
+> supervised worker, health checks and system-level tests, and CI is split into verification, integration and system jobs. There are
+> no database tables, domain jobs, authentication or product functionality yet.
 >
 > An earlier, larger Phase 1 build (including a BullMQ worker) is preserved on the git branch `phase-1-foundation`.
 
@@ -46,6 +47,17 @@ pnpm --filter @agentos/worker dev        # worker (needs `pnpm infra:up`); no po
 pnpm --filter @agentos/web dev           # web on :5173
 ```
 
+### The full stack in containers
+
+```bash
+pnpm stack:up       # postgres, redis, migrate, api, worker, web: built and started in dependency order, returns when healthy
+pnpm stack:ps       # status and health
+pnpm stack:down     # stop and remove containers; data volumes are kept (run `pnpm infra:up` to bring the infrastructure back)
+```
+
+Web http://localhost:5173 (nginx, same-origin `/api` proxy), API http://localhost:3000. Details, restart/supervision behavior and
+limits: [docker-compose.md](docs/architecture/docker-compose.md).
+
 The API **requires** `DATABASE_URL` and `REDIS_URL` and exits at startup with a clear message if they are missing. It
 does not need the databases to be _running_ to start: it reports `not_ready` on `/health/ready` until they are.
 
@@ -58,29 +70,32 @@ details: [docs/architecture/infrastructure.md](docs/architecture/infrastructure.
 
 ## Commands
 
-| Command                   | What it does                                                                                  |
-| ------------------------- | --------------------------------------------------------------------------------------------- |
-| `pnpm dev`                | Start API (watch mode), worker (watch mode) and web (Vite) in parallel                        |
-| `pnpm build`              | Generate the Prisma client, then build the shared packages, API, worker and web               |
-| `pnpm lint`               | ESLint on every project, including the architecture boundary rules                            |
-| `pnpm typecheck`          | `tsc --noEmit` on every project                                                               |
-| `pnpm test`               | Unit and in-process e2e tests (no infrastructure needed)                                      |
-| `pnpm test:integration`   | Tests against real PostgreSQL + Redis, incl. the worker process (needs `pnpm infra:up`)       |
-| `pnpm verify`             | lint + typecheck + test + build                                                               |
-| `pnpm format`             | Prettier write (`format:check` verifies)                                                      |
-| `pnpm graph`              | Open the Nx project graph                                                                     |
-| `pnpm setup:env`          | Create `.env` with generated local passwords                                                  |
-| `pnpm infra:up`           | Start PostgreSQL + Redis (waits for health)                                                   |
-| `pnpm infra:ps`           | Show infrastructure status                                                                    |
-| `pnpm infra:logs`         | Follow infrastructure logs                                                                    |
-| `pnpm infra:config`       | Validate the compose file and `.env`                                                          |
-| `pnpm infra:down`         | Stop and remove containers. **Keeps your data** (named volumes)                               |
-| `pnpm infra:destroy-data` | **Deletes all local PostgreSQL and Redis data.** Asks for confirmation. Not a routine cleanup |
-| `pnpm db:validate`        | Validate the Prisma schema                                                                    |
-| `pnpm db:generate`        | Generate the Prisma client                                                                    |
-| `pnpm db:migrate`         | Create/apply a development migration (`pnpm db:migrate --name <name>`)                        |
-| `pnpm db:deploy`          | Apply committed migrations (CI/production)                                                    |
-| `pnpm db:status`          | Show migration status                                                                         |
+| Command                                                                    | What it does                                                                                  |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `pnpm dev`                                                                 | Start API (watch mode), worker (watch mode) and web (Vite) in parallel on the host            |
+| `pnpm build`                                                               | Generate the Prisma client, then build the shared packages, API, worker and web               |
+| `pnpm lint`                                                                | ESLint on every project, including the architecture boundary rules                            |
+| `pnpm typecheck`                                                           | `tsc --noEmit` on every project                                                               |
+| `pnpm test`                                                                | Unit and in-process e2e tests (no infrastructure needed)                                      |
+| `pnpm test:integration`                                                    | Tests against real PostgreSQL + Redis, incl. the worker process (needs `pnpm infra:up`)       |
+| `pnpm test:system`                                                         | Docker system tests: the full stack as a black box (builds images; needs Docker; minutes)     |
+| `pnpm verify`                                                              | lint + typecheck + test + build + architecture and environment checks                         |
+| `pnpm check:env`                                                           | Environment consistency: schemas, `.env.example`, Compose, Dockerfile                         |
+| `pnpm stack:up` / `stack:down` / `stack:ps` / `stack:logs` / `stack:build` | The full stack in containers (see above)                                                      |
+| `pnpm format`                                                              | Prettier write (`format:check` verifies)                                                      |
+| `pnpm graph`                                                               | Open the Nx project graph                                                                     |
+| `pnpm setup:env`                                                           | Create `.env` with generated local passwords                                                  |
+| `pnpm infra:up`                                                            | Start PostgreSQL + Redis (waits for health)                                                   |
+| `pnpm infra:ps`                                                            | Show infrastructure status                                                                    |
+| `pnpm infra:logs`                                                          | Follow infrastructure logs                                                                    |
+| `pnpm infra:config`                                                        | Validate the compose file and `.env`                                                          |
+| `pnpm infra:down`                                                          | Stop and remove containers. **Keeps your data** (named volumes)                               |
+| `pnpm infra:destroy-data`                                                  | **Deletes all local PostgreSQL and Redis data.** Asks for confirmation. Not a routine cleanup |
+| `pnpm db:validate`                                                         | Validate the Prisma schema                                                                    |
+| `pnpm db:generate`                                                         | Generate the Prisma client                                                                    |
+| `pnpm db:migrate`                                                          | Create/apply a development migration (`pnpm db:migrate --name <name>`)                        |
+| `pnpm db:deploy`                                                           | Apply committed migrations (CI/production)                                                    |
+| `pnpm db:status`                                                           | Show migration status                                                                         |
 
 Run one project with Nx, e.g. `pnpm exec nx test @agentos/api`. Nx caches `build`, `lint`, `typecheck` and `test`; tasks
 depend on `^build`, and API tasks also depend on `generate` (Prisma client).
@@ -95,7 +110,8 @@ packages/contracts  Zod schemas shared by web and api       scope:shared   type:
 packages/config     Env parsing helpers (api, worker)       scope:backend  type:lib
 packages/logger     pino options + redaction (api, worker)  scope:backend  type:lib
 packages/queue      BullMQ/ioredis wrappers, retry policy   scope:backend  type:lib
-infrastructure/     Docker Compose (PostgreSQL, Redis)
+tests/system        Docker system tests (black box)         scope:backend  type:app
+infrastructure/     Docker Compose (full stack) and the Dockerfile
 tools/              Small Node scripts (setup:env, guarded data deletion)
 docs/               Architecture specification, notes, ADRs
 ```
@@ -103,5 +119,9 @@ docs/               Architecture specification, notes, ADRs
 Details: [monorepo.md](docs/architecture/monorepo.md) (workspace and dependency rules),
 [backend.md](docs/architecture/backend.md) (**backend conventions and how to add a domain module**),
 [frontend.md](docs/architecture/frontend.md) (**frontend conventions and how to add a feature**),
-[workers.md](docs/architecture/workers.md) (**worker runtime, job contract, delivery and shutdown semantics**) and
+[workers.md](docs/architecture/workers.md) (**worker runtime, job contract, delivery and shutdown semantics**),
+[system-overview.md](docs/architecture/system-overview.md) (**the whole system and its boundaries**),
+[development.md](docs/architecture/development.md) (**local development and the test guide**),
+[docker-compose.md](docs/architecture/docker-compose.md) (**containers, supervision, health**),
+[environment.md](docs/architecture/environment.md), [ci.md](docs/architecture/ci.md) and
 [infrastructure.md](docs/architecture/infrastructure.md) (PostgreSQL, Redis, Prisma, health).

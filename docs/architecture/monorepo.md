@@ -4,22 +4,23 @@ Implements the foundation described in the specification, sections 4 and 17, red
 
 ## Workspace
 
-- **pnpm workspace** (`pnpm-workspace.yaml`): `apps/*`, `packages/*`. Package manager pinned via `packageManager`.
+- **pnpm workspace** (`pnpm-workspace.yaml`): `apps/*`, `packages/*`, `tests/*`. Package manager pinned via `packageManager`.
 - **Nx 21** orchestrates tasks. Projects are discovered from `package.json` files; targets are the package
   scripts (`dev`, `build`, `lint`, `typecheck`, `test`). `nx.json` defines caching and `dependsOn: ["^build"]`, so a
   project's dependencies (contracts) are built before it is built, typechecked or tested.
 - **TypeScript**: `tsconfig.base.json` holds shared strict settings (`strict`, `noImplicitOverride`,
   `isolatedModules`, ...). Each project extends it and sets its own module system.
 
-| Project              | Type | Scope   | Runtime / build                                          |
-| -------------------- | ---- | ------- | -------------------------------------------------------- |
-| `apps/web`           | app  | web     | React 19, Vite 7; ESM                                    |
-| `apps/api`           | app  | backend | NestJS 11 on Express 5; CommonJS via `nest build` (tsc)  |
-| `apps/worker`        | app  | backend | Framework-free BullMQ worker host; CommonJS via `tsc`    |
-| `packages/contracts` | lib  | shared  | Zod 4 only; built with tsup to CJS + ESM + `.d.ts`       |
-| `packages/config`    | lib  | backend | Zod only; env parsing helpers (api, worker)              |
-| `packages/logger`    | lib  | backend | pino options and redaction (api, worker)                 |
-| `packages/queue`     | lib  | backend | BullMQ + ioredis wrappers, retry policy, `QueueProducer` |
+| Project              | Type | Scope   | Runtime / build                                                     |
+| -------------------- | ---- | ------- | ------------------------------------------------------------------- |
+| `apps/web`           | app  | web     | React 19, Vite 7; ESM                                               |
+| `apps/api`           | app  | backend | NestJS 11 on Express 5; CommonJS via `nest build` (tsc)             |
+| `apps/worker`        | app  | backend | Framework-free BullMQ worker host; CommonJS via `tsc`               |
+| `tests/system`       | app  | backend | Docker system tests (vitest); drives the Compose stack from outside |
+| `packages/contracts` | lib  | shared  | Zod 4 only; built with tsup to CJS + ESM + `.d.ts`                  |
+| `packages/config`    | lib  | backend | Zod only; env parsing helpers (api, worker)                         |
+| `packages/logger`    | lib  | backend | pino options and redaction (api, worker)                            |
+| `packages/queue`     | lib  | backend | BullMQ + ioredis wrappers, retry policy, `QueueProducer`            |
 
 `@agentos/contracts` ships both CJS (consumed by the Nest API) and ESM (consumed by Vite) from one build.
 Applications consume the **built** output, which is why `dev` depends on `^build`.
