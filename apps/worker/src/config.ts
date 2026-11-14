@@ -55,6 +55,11 @@ export const workerEnvSchema = z.object({
   WORKER_SHUTDOWN_GRACE_MS: z.coerce.number().int().min(0).max(600_000).default(30_000),
   /** Give up starting (exit code 1) if Redis is not usable within this time. After startup, Redis outages are survived. */
   WORKER_STARTUP_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(300_000).default(30_000),
+  /**
+   * Path of the heartbeat file that `dist/healthcheck.js` reads (Docker HEALTHCHECK). Unset = health reporting disabled.
+   * There is deliberately no HTTP health port: see workers.md.
+   */
+  WORKER_HEALTH_FILE: z.string().min(1).optional(),
   /** How long a job's lock lasts without renewal: a crashed worker's jobs are redelivered after about this long. */
   WORKER_LOCK_DURATION_MS: z.coerce.number().int().min(1_000).max(600_000).default(30_000),
 });

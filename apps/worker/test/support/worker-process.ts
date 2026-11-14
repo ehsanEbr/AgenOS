@@ -23,13 +23,18 @@ export class WorkerProcess {
   private readonly child: ChildProcess;
   private buffered = '';
 
-  constructor(env: Record<string, string>) {
-    if (!existsSync(ENTRY)) {
+  /**
+   * `entry` runs a different file instead of the built worker (a TypeScript test entry through tsx); everything else about the
+   * process (environment-only configuration, pipes, signals) is identical.
+   */
+  constructor(env: Record<string, string>, options: { entry?: string } = {}) {
+    const entry = options.entry ?? ENTRY;
+    if (options.entry === undefined && !existsSync(ENTRY)) {
       throw new Error(
         'apps/worker/dist/main.js is missing: build first (`pnpm --filter @agentos/worker build`, or run via Nx).',
       );
     }
-    this.child = spawn(process.execPath, [ENTRY], {
+    this.child = spawn(process.execPath, options.entry === undefined ? [entry] : ['--import', 'tsx', entry], {
       cwd: resolve(__dirname, '../..'),
       env: { ...process.env, NODE_ENV: 'test', LOG_LEVEL: 'info', REDIS_URL: testRedisUrl(), ...env },
       stdio: ['ignore', 'pipe', 'pipe'],

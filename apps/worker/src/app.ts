@@ -1,12 +1,12 @@
 import type { Logger } from '@agentos/logger';
 import type { WorkerConfig } from './config';
-import { createRegistry } from './processors';
-import { WorkerHost, type StuckHandlerInfo } from './runtime';
+import { type ProcessorRegistry, type StuckHandlerInfo, WorkerHost } from './runtime';
 
-/** Wires configuration, the processor registry and the runtime into a host. The only place those three meet. */
+/** Wires configuration, a processor registry and the runtime into a host. The registry is passed in (production: `createRegistry()` in main.ts). */
 export function createWorkerHost(
   config: WorkerConfig,
   logger: Logger,
+  registry: ProcessorRegistry,
   hooks: { onStuckHandler?: (info: StuckHandlerInfo) => void } = {},
 ): WorkerHost {
   return new WorkerHost({
@@ -14,7 +14,7 @@ export function createWorkerHost(
     redisUrl: config.REDIS_URL,
     prefix: config.QUEUE_PREFIX,
     queues: config.WORKER_QUEUES,
-    registry: createRegistry(),
+    registry,
     logger,
     concurrency: config.WORKER_CONCURRENCY,
     jobTimeoutMs: config.WORKER_JOB_TIMEOUT_MS,
