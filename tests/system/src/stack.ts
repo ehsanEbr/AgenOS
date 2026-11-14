@@ -371,22 +371,37 @@ export async function buildImages(): Promise<void> {
   const envFile = join(mkdtempSync(join(tmpdir(), 'agentos-systest-build-')), 'env');
   // Images are built without secrets; these placeholder values only satisfy Compose's "required variable" checks.
   writeFileSync(envFile, 'POSTGRES_PASSWORD=build-only\nREDIS_PASSWORD=build-only\n', { mode: 0o600 });
-  const result = await run(
-    'docker',
-    [
-      'compose',
-      '-p',
-      `${THROWAWAY_PREFIX}build`,
-      '--env-file',
-      envFile,
-      '-f',
-      COMPOSE_FILE,
-      '--profile',
-      'app',
-      'build',
-    ],
-    { timeoutMs: 1_500_000 },
-  );
-  rmSync(envFile, { force: true });
-  if (result.code !== 0) throw new Error(`image build failed:\n${result.stderr.slice(-3000)}`);
+  const build = (service: string) =>
+    run(
+      'docker',
+      [
+        'compose',
+        '-p',
+        `${THROWAWAY_PREFIX}build`,
+        '--env-file',
+        envFile,
+        '-f',
+        COMPOSE_FILE,
+        '--profile',
+        'app',
+        'build',
+        service,
+      ],
+      { timeoutMs: 1_500_000, env: composeEnvironment() },
+    );
+
+  try {
+    // One target at a time. They share one expensive stage (install + build of the whole workspace); building all three at once
+    // makes three clients wait on it and a cold build can hit BuildKit's client deadline ("DeadlineExceeded") even though the
+    // shared stage itself finishes. The first build populates the cache, the other two reuse it. One retry covers a transient
+    // network error during the install (the second attempt resumes from the layers that did complete).
+    for (const service of ['api', 'worker', 'web']) {
+      let result = await build(service);
+      if (result.code !== 0) result = await build(service);
+      if (result.code !== 0)
+        throw new Error(`image build failed for ${service}:\n${result.stderr.slice(-3000)}`);
+    }
+  } finally {
+    rmSync(envFile, { force: true });
+  }
 }
