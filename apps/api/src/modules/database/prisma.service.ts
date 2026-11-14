@@ -12,7 +12,7 @@ const CONNECT_TIMEOUT_MS = 5000;
  * Lifecycle:
  * - Startup: tries to connect, but an unreachable database is NOT fatal. The API still starts, reports
  *   `not_ready` on /api/v1/health/ready, and Prisma reconnects lazily on the next query.
- * - Shutdown: disconnects exactly once (triggered by `app.enableShutdownHooks()` on SIGTERM/SIGINT or `app.close()`).
+ * - Shutdown: disconnects exactly once (triggered by `app.close()`, which main.ts calls on SIGTERM/SIGINT).
  *   Repeated calls return the same promise, and a failing disconnect is logged, never thrown.
  *
  * Who may inject it: repositories (infrastructure layer) and this module. Application services and controllers use
