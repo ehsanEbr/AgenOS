@@ -67,21 +67,19 @@ the API's `lint` target and via `pnpm check:architecture`).
 
 ## apps/web
 
+React 19 + Vite 7 + Ant Design 6 + React Router 7 + TanStack Query + Zustand + i18next. The full structure, layering rules, conventions and the
+"add a feature" checklist are in **[frontend.md](frontend.md)** (single source of truth); in short:
+
 ```text
-src/
-├── main.tsx
-├── app/        App (providers), router, AppLayout (shell)
-├── features/   one folder per feature: home/, health/ (API status indicator)
-├── shared/     api/ (client), config/ (env), stores/ (Zustand), ui/ (ErrorBoundary, page states)
-└── test/       Vitest setup
+src/app/        composition: providers, the route table, the shell layout, preference state
+src/features/   one folder per product area, public surface = index.ts (today: home, health)
+src/shared/     bottom layer: API client, theme, i18n infrastructure, UI primitives (no knowledge of features/app)
+src/test/       render helpers, media mock, contract-typed API fixtures
 ```
 
-- The **API client** (`shared/api/client.ts`) is the only place that calls `fetch`. It validates responses with
-  contract schemas and converts failures into `ApiClientError`.
-- **Environment** (`shared/config/env.ts`) validates `import.meta.env` with Zod at startup.
-- **State**: server state via TanStack Query; client-only UI state via Zustand (sidebar collapse).
-- The **API status** tag in the header is the only data-driven UI; it exists to prove the web -> contracts -> API
-  path, not as a feature.
+Dependency direction `app -> features -> shared` is enforced by ESLint; feature-to-feature internals and cycles by `tools/check-module-boundaries.mjs`
+(run inside the web `lint` target and by `pnpm check:architecture`). `fetch` is allowed only in `shared/api/client.ts` and `import.meta.env` only in
+`shared/config/env.ts`. Decisions: [ADR-0005](../adr/0005-frontend-architecture.md).
 
 ## packages/contracts
 

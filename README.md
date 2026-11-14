@@ -3,8 +3,9 @@
 Platform for designing, running and observing AI agent systems. See the
 [architecture specification](docs/architecture/technical-architecture-specification.md).
 
-> **Status: Phase 1.3 (Backend Foundation).** The workspace has a web shell, an API skeleton with documented module,
-> error, transaction, logging and testing conventions, shared contracts, and local PostgreSQL + Redis infrastructure with Prisma and readiness checks. There are no database tables, queues,
+> **Status: foundation phases complete through 1.4 (Frontend Foundation).** The workspace has a themed, bilingual (English/Persian, LTR/RTL) web shell with
+> routing, an API client and documented conventions; an API skeleton with module, error, transaction, logging and testing conventions; shared contracts; and local
+> PostgreSQL + Redis infrastructure with Prisma and readiness checks. There are no database tables, queues,
 > workers, authentication or product functionality yet.
 >
 > An earlier, larger Phase 1 build (including a BullMQ worker) is preserved on the git branch `phase-1-foundation`.
@@ -94,5 +95,6 @@ docs/               Architecture specification, notes, ADRs
 ```
 
 Details: [monorepo.md](docs/architecture/monorepo.md) (workspace and dependency rules),
-[backend.md](docs/architecture/backend.md) (**backend conventions and how to add a domain module**) and
+[backend.md](docs/architecture/backend.md) (**backend conventions and how to add a domain module**),
+[frontend.md](docs/architecture/frontend.md) (**frontend conventions and how to add a feature**) and
 [infrastructure.md](docs/architecture/infrastructure.md) (PostgreSQL, Redis, Prisma, health).
