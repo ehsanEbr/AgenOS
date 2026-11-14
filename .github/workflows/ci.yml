@@ -12,7 +12,7 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       NX_NO_CLOUD: 'true'
 
@@ -28,8 +28,35 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Generates .env with random throwaway passwords (the same path developers use locally).
+      - name: Prepare environment
+        run: pnpm setup:env
+
+      - name: Validate Docker Compose configuration
+        run: pnpm infra:config
+
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
+
+      # Start the real infrastructure from the same compose file developers use.
+      - name: Start PostgreSQL and Redis
+        run: pnpm infra:up
+
+      - name: Validate Prisma schema and apply migrations
+        run: |
+          pnpm db:validate
+          pnpm db:deploy
+
+      - name: Integration tests (real PostgreSQL + Redis)
+        run: pnpm test:integration
+
+      - name: Infrastructure logs (on failure)
+        if: failure()
+        run: docker compose --env-file .env -f infrastructure/compose/docker-compose.yml logs --no-color --tail=200
+
+      - name: Stop infrastructure
+        if: always()
+        run: pnpm infra:down

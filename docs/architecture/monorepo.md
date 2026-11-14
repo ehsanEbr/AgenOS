@@ -1,4 +1,4 @@
-# Monorepo architecture (Phase 1.1)
+# Monorepo architecture (Phase 1.1, extended in 1.2)
 
 Implements the foundation described in the specification, sections 4 and 17, reduced to the scope of Phase 1.1.
 
@@ -32,6 +32,7 @@ All rules run in `pnpm lint` (`eslint.config.mjs`). Each was verified with a pla
 | No circular project dependencies                     | Built into `@nx/enforce-module-boundaries`                                                                                                                                                  |
 | No wildcard/deep access into packages or domains     | `@agentos/*/*` deep imports banned; inside `apps/api`, another module may only be imported through its `index.ts`                                                                           |
 | No unnecessary shared abstractions                   | Only `contracts` exists as a shared package; config and logging live in `apps/api` until a second consumer needs them                                                                       |
+| Database/cache drivers stay inside their module      | `@prisma/client`/`prisma` only in `modules/database`, `ioredis` only in `modules/redis` (`no-restricted-imports`); neither may be imported by `apps/web` or `packages/contracts`            |
 
 Future workers (`apps/*-worker`, `apps/scheduler`) tagged `type:app` + `scope:backend` can import `@agentos/contracts`
 and nothing else from the workspace. This was verified with a temporary worker project: contracts import allowed;
@@ -60,8 +61,13 @@ src/
 │   └── zod-openapi.ts           contract schema -> OpenAPI JSON Schema
 └── modules/
     ├── config/             env validation (Zod), global APP_CONFIG provider
-    └── health/             GET /api/v1/health
-test/app.e2e.spec.ts        in-process pipeline test (no external services)
+    ├── database/           PrismaService (only importer of @prisma/client); lazy-tolerant startup, safe shutdown
+    ├── redis/              RedisService (only importer of ioredis); fail-fast commands, graceful QUIT
+    └── health/             GET /api/v1/health (liveness), GET /api/v1/health/ready (PostgreSQL + Redis)
+test/app.e2e.spec.ts        in-process pipeline test with stubbed infrastructure
+test/infrastructure.int.spec.ts   integration tests against real PostgreSQL + Redis (pnpm test:integration)
+prisma/schema/             Prisma schema files (generator + datasource only; no models yet)
+prisma.config.ts           Prisma CLI configuration
 ```
 
 - **Validation**: parameters typed with a `createZodDto(schema)` class are validated by the global pipe; others pass
@@ -71,8 +77,10 @@ test/app.e2e.spec.ts        in-process pipeline test (no external services)
 - **Correlation id**: `x-correlation-id` is reused if well-formed, otherwise generated; it is returned on every
   response and used as the log request id.
 - **OpenAPI**: Swagger UI at `/api/docs`, JSON at `/api/openapi.json` (OpenAPI 3.1), generated from contract schemas.
-- **Config**: `API_HOST`, `API_PORT`, `LOG_LEVEL`, `NODE_ENV`, `CORS_ORIGINS`. Defaults bind to `127.0.0.1`; set
-  `API_HOST=0.0.0.0` for containers.
+- **Config**: `API_HOST`, `API_PORT`, `LOG_LEVEL`, `NODE_ENV`, `CORS_ORIGINS` (all defaulted; the API binds to
+  `127.0.0.1` unless `API_HOST=0.0.0.0`) plus the required `DATABASE_URL` and `REDIS_URL`.
+- **Infrastructure**: PostgreSQL, Redis, Prisma workflow, health vs readiness and tests are documented in
+  [infrastructure.md](infrastructure.md).
 
 ## apps/web
 
@@ -94,11 +102,11 @@ src/
 
 ## packages/contracts
 
-Exports `apiErrorSchema`, `CORRELATION_ID_HEADER`, `healthResponseSchema`, `idSchema`, `isoDateTimeSchema` and the
-inferred types. Depends on `zod` only. Add a schema here only when both sides use it.
+Exports `apiErrorSchema`, `CORRELATION_ID_HEADER`, `healthResponseSchema`, `readinessResponseSchema`, `idSchema`,
+`isoDateTimeSchema` and the inferred types. Depends on `zod` only. Add a schema here only when both sides use it.
 
-## Out of scope in this phase
+## Out of scope (not yet implemented)
 
-PostgreSQL/Prisma, Redis/BullMQ, workers, authentication, organizations/projects, LLM providers, agent execution,
-MCP, repository indexing, product dashboards. The previous Phase 1 implementation of the first four is on branch
-`phase-1-foundation`.
+BullMQ and every worker/scheduler process, authentication, organizations/projects, LLM providers, agent execution, MCP,
+repository indexing, product dashboards, and any database entity. The earlier Phase 1 implementation of queues and a
+worker is on branch `phase-1-foundation`.
