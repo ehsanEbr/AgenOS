@@ -67,14 +67,15 @@ The worker logs `job completed` with the job id, type and correlation id.
 
 ## Troubleshooting
 
-| Symptom                                                    | Likely cause and fix                                                                                                                    |
-| ---------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| API exits with a message naming `DATABASE_URL`/`REDIS_URL` | `.env` missing: run `pnpm setup:env`                                                                                                    |
-| `password authentication failed` after editing `.env`      | PostgreSQL only applies the password when its volume is created; see [infrastructure.md](infrastructure.md)                             |
-| Worker container `Exited (2)`                              | Invalid worker configuration: `pnpm stack:logs` names the variable (never its value)                                                    |
-| Worker container `unhealthy`                               | `docker inspect --format '{{json .State.Health}}' <container>`: the last probe line says why (not ready / Redis down / stale heartbeat) |
-| `stack:up` build fails on `apt-get` with 503               | A transient Debian mirror error; the Dockerfile retries 5 times, run it again                                                           |
-| `ERR_PNPM_IGNORED_BUILDS` after adding a dependency        | Allow or deny its install script in `pnpm-workspace.yaml` (`allowBuilds`)                                                               |
+| Symptom                                                    | Likely cause and fix                                                                                                                                                                                                                                                 |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API exits with a message naming `DATABASE_URL`/`REDIS_URL` | `.env` missing: run `pnpm setup:env`                                                                                                                                                                                                                                 |
+| `password authentication failed` after editing `.env`      | PostgreSQL only applies the password when its volume is created; see [infrastructure.md](infrastructure.md)                                                                                                                                                          |
+| Worker container `Exited (2)`                              | Invalid worker configuration: `pnpm stack:logs` names the variable (never its value)                                                                                                                                                                                 |
+| Worker container `unhealthy`                               | `docker inspect --format '{{json .State.Health}}' <container>`: the last probe line says why (not ready / Redis down / stale heartbeat)                                                                                                                              |
+| `stack:up` build fails on `apt-get` with 503               | A transient Debian mirror error; the Dockerfile retries 5 times, run it again                                                                                                                                                                                        |
+| Image build fails with `DeadlineExceeded`                  | Docker Hub unreachable or slow from your network (BuildKit resolves base-image tags online). Check `docker buildx imagetools inspect node:22.14.0-bookworm-slim` and retry when it answers. `SYSTEST_SKIP_BUILD=1` runs the system tests on images you already built |
+| `ERR_PNPM_IGNORED_BUILDS` after adding a dependency        | Allow or deny its install script in `pnpm-workspace.yaml` (`allowBuilds`)                                                                                                                                                                                            |
 
 ## Testing
 
