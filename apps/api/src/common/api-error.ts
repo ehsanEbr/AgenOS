@@ -1,5 +1,6 @@
 import { HttpException, HttpStatus } from '@nestjs/common';
 import type { ApiError } from '@agentos/contracts';
+import { AppError, HTTP_STATUS_BY_ERROR_KIND } from './app-error';
 
 const DEFAULT_CODES: Record<number, string> = {
   [HttpStatus.BAD_REQUEST]: 'bad_request',
@@ -13,10 +14,35 @@ const DEFAULT_CODES: Record<number, string> = {
 };
 
 /**
+ * - `application`: an AppError thrown on purpose by domain/application code.
+ * - `http`: a Nest HttpException (framework errors such as unknown routes, or presentation-layer code).
+ * - `unexpected`: anything else. This is a bug or an unclassified failure.
+ */
+export type ErrorClass = 'application' | 'http' | 'unexpected';
+
+export function classifyError(exception: unknown): ErrorClass {
+  if (exception instanceof AppError) return 'application';
+  if (exception instanceof HttpException) return 'http';
+  return 'unexpected';
+}
+
+/**
  * Converts any thrown value into the standard ApiError body (spec section 7.2).
- * Non-HTTP exceptions never leak their message to the client.
+ * Unexpected errors never leak their message to the client.
  */
 export function toApiError(exception: unknown, correlationId: string): { status: number; body: ApiError } {
+  if (exception instanceof AppError) {
+    return {
+      status: HTTP_STATUS_BY_ERROR_KIND[exception.kind],
+      body: {
+        code: exception.code,
+        message: exception.message,
+        ...(exception.details !== undefined ? { details: exception.details } : {}),
+        correlationId,
+      },
+    };
+  }
+
   if (exception instanceof HttpException) {
     const status = exception.getStatus();
     const response = exception.getResponse();

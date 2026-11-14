@@ -13,7 +13,7 @@
     "lint": "nx run-many -t lint",
     "typecheck": "nx run-many -t typecheck",
     "test": "nx run-many -t test",
-    "verify": "nx run-many -t lint typecheck test build",
+    "verify": "nx run-many -t lint typecheck test build && pnpm check:architecture",
     "test:integration": "nx run-many -t test:integration",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -29,7 +29,8 @@
     "db:validate": "pnpm --filter @agentos/api db:validate",
     "db:migrate": "pnpm --filter @agentos/api db:migrate",
     "db:deploy": "pnpm --filter @agentos/api db:deploy",
-    "db:status": "pnpm --filter @agentos/api db:status"
+    "db:status": "pnpm --filter @agentos/api db:status",
+    "check:architecture": "node tools/check-module-boundaries.mjs && node --test \"tools/*.test.mjs\""
   },
   "devDependencies": {
     "@eslint/js": "^9.30.0",

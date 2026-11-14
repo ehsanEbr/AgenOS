@@ -6,19 +6,22 @@ import { APP_CONFIG, type ApiConfig } from '../config';
 const CONNECT_TIMEOUT_MS = 5000;
 
 /**
- * The single Prisma Client for the API process (PostgreSQL is the source of truth, ADR-004).
+ * The single Prisma Client for the API process (PostgreSQL is the source of truth, ADR-004). It owns the connection
+ * lifecycle; nothing else connects or disconnects.
  *
  * Lifecycle:
  * - Startup: tries to connect, but an unreachable database is NOT fatal. The API still starts, reports
  *   `not_ready` on /api/v1/health/ready, and Prisma reconnects lazily on the next query.
- * - Shutdown: disconnects (triggered by `app.enableShutdownHooks()` on SIGTERM/SIGINT).
+ * - Shutdown: disconnects exactly once (triggered by `app.enableShutdownHooks()` on SIGTERM/SIGINT or `app.close()`).
+ *   Repeated calls return the same promise, and a failing disconnect is logged, never thrown.
  *
- * Only code inside the database module may import Prisma (enforced by ESLint). Other modules get
- * data through repositories exported by their own module, never through Prisma types.
+ * Who may inject it: repositories (infrastructure layer) and this module. Application services and controllers use
+ * `TransactionRunner` and repositories instead (enforced by ESLint).
  */
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PrismaService.name);
+  private shutdown?: Promise<void>;
 
   constructor(@Inject(APP_CONFIG) config: ApiConfig) {
     super({ datasourceUrl: config.DATABASE_URL });
@@ -37,7 +40,12 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     }
   }
 
-  async onModuleDestroy(): Promise<void> {
+  onModuleDestroy(): Promise<void> {
+    this.shutdown ??= this.disconnectSafely();
+    return this.shutdown;
+  }
+
+  private async disconnectSafely(): Promise<void> {
     try {
       await this.$disconnect();
     } catch (err) {

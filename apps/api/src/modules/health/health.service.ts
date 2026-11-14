@@ -7,6 +7,19 @@ import { RedisService } from '../redis';
 /** Upper bound for each dependency probe. Kept below typical orchestrator probe timeouts (3-5 s). */
 export const READINESS_TIMEOUT_MS = 2000;
 
+type DependencyName = keyof ReadinessResponse['checks'];
+
+/**
+ * Every infrastructure dependency the API knows about, and whether the API can serve traffic without it.
+ * `required: true` => its failure makes the API `not_ready`. A dependency that is merely nice-to-have must be
+ * declared `required: false`: it is still probed and reported, but it never flips readiness. Adding a dependency
+ * means making this decision explicitly here (and in ADR-0004's table), never by default.
+ */
+export const DEPENDENCIES: Readonly<Record<DependencyName, { required: boolean }>> = {
+  postgres: { required: true }, // source of truth (ADR-004)
+  redis: { required: true }, // cache / ephemeral state; required since Phase 1.2 (ADR-0003)
+};
+
 @Injectable()
 export class HealthService {
   private readonly logger = new Logger(HealthService.name);
@@ -25,11 +38,14 @@ export class HealthService {
       this.probe('postgres', () => this.prisma.checkConnection()),
       this.probe('redis', () => this.redis.checkConnection()),
     ]);
-    const ready = postgres.status === 'up' && redis.status === 'up';
-    return { status: ready ? 'ready' : 'not_ready', checks: { postgres, redis } };
+    const checks = { postgres, redis };
+    const ready = (Object.keys(DEPENDENCIES) as DependencyName[]).every(
+      (name) => !DEPENDENCIES[name].required || checks[name].status === 'up',
+    );
+    return { status: ready ? 'ready' : 'not_ready', checks };
   }
 
-  private async probe(name: string, check: () => Promise<void>): Promise<DependencyCheck> {
+  private async probe(name: DependencyName, check: () => Promise<void>): Promise<DependencyCheck> {
     const started = performance.now();
     try {
       await withTimeout(check(), READINESS_TIMEOUT_MS, name);

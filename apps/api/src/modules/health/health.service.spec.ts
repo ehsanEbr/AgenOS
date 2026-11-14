@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readinessResponseSchema } from '@agentos/contracts';
 import type { PrismaService } from '../database';
 import type { RedisService } from '../redis';
-import { HealthService, READINESS_TIMEOUT_MS } from './health.service';
+import { DEPENDENCIES, HealthService, READINESS_TIMEOUT_MS } from './health.service';
 
 type Check = () => Promise<void>;
 const ok: Check = () => Promise.resolve();
@@ -31,6 +31,10 @@ describe('HealthService.checkReadiness', () => {
     expect(result.checks.postgres.status).toBe('up');
     expect(result.checks.redis.status).toBe('up');
     expect(readinessResponseSchema.safeParse(result).success).toBe(true);
+  });
+
+  it('declares every known dependency as required (optional ones must be opted into explicitly)', () => {
+    expect(DEPENDENCIES).toEqual({ postgres: { required: true }, redis: { required: true } });
   });
 
   it('is not ready when PostgreSQL is down, and says which dependency', async () => {

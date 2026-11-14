@@ -16,6 +16,7 @@ const CONNECT_TIMEOUT_MS = 3000;
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
   private outage = false;
+  private shutdown?: Promise<void>;
   readonly client: Redis;
 
   constructor(@Inject(APP_CONFIG) config: ApiConfig) {
@@ -51,7 +52,13 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async onModuleDestroy(): Promise<void> {
+  /** Closes the connection exactly once; repeated calls (hook + manual close) share the same promise. */
+  onModuleDestroy(): Promise<void> {
+    this.shutdown ??= this.closeConnection();
+    return this.shutdown;
+  }
+
+  private async closeConnection(): Promise<void> {
     if (this.client.status === 'ready') {
       try {
         await this.client.quit(); // graceful: lets pending replies finish

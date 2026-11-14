@@ -3,6 +3,15 @@ import nx from '@nx/eslint-plugin';
 import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
+/*
+ * Architecture rules. Documented in docs/architecture/monorepo.md and docs/architecture/backend.md.
+ * Never weaken a rule to make an import pass: change the design instead, or write an ADR.
+ */
+
+// ---------------------------------------------------------------------------------------------------------
+// Workspace-level rules
+// ---------------------------------------------------------------------------------------------------------
+
 const DEEP_IMPORT = {
   group: ['@agentos/*/*'],
   message: 'Import workspace packages through their public entry point only (no deep imports).',
@@ -39,7 +48,17 @@ const CONTRACTS_FORBIDDEN = {
   message: 'packages/contracts must stay free of framework and infrastructure dependencies (zod only).',
 };
 
-// Backend domain modules expose a public index; others may not reach into their internals.
+// The browser app must never depend on database, cache or queue packages.
+const WEB_FORBIDDEN = {
+  group: ['@prisma/*', 'prisma', 'ioredis', 'redis', 'pg', 'bullmq'],
+  message: 'apps/web must not depend on database or infrastructure packages. Use the API.',
+};
+
+// ---------------------------------------------------------------------------------------------------------
+// apps/api: module boundaries
+// ---------------------------------------------------------------------------------------------------------
+
+// Backend modules expose a public index.ts; others may not reach into their internals.
 const MODULE_INTERNALS_MESSAGE =
   'Import another module through its index (e.g. "../config"), never its internal files.';
 // From outside modules/: "<...>/modules/<name>/<file>".
@@ -47,22 +66,75 @@ const MODULE_INTERNALS_FROM_OUTSIDE = { group: ['**/modules/*/*'], message: MODU
 // From inside a module: "../<sibling>/<file>" (but not "../../common/...", which starts with "../..").
 const MODULE_INTERNALS_FROM_SIBLING = { regex: '^\\.\\./[^/.][^/]*/.+', message: MODULE_INTERNALS_MESSAGE };
 
-// Infrastructure drivers are confined to their own API module so domain code never depends on them
-// (and Prisma types never leak into other modules or into packages/contracts).
-const PRISMA_ONLY_IN_DATABASE_MODULE = {
+// Drivers are confined: Prisma lives in modules/database and in the infrastructure layer of domain modules (their
+// repositories); ioredis lives only in modules/redis. Everything else reaches data through those.
+const PRISMA_RESTRICTED = {
   group: ['@prisma/*', 'prisma', 'prisma/*'],
-  message: 'Prisma may only be imported inside apps/api/src/modules/database.',
+  message:
+    "Prisma may only be imported in modules/database and in a domain module's infrastructure layer (repositories).",
 };
-const IOREDIS_ONLY_IN_REDIS_MODULE = {
+const IOREDIS_RESTRICTED = {
   group: ['ioredis', 'ioredis/*'],
   message: 'ioredis may only be imported inside apps/api/src/modules/redis.',
 };
 
-// The browser app must never depend on database, cache or queue packages.
-const WEB_FORBIDDEN = {
-  group: ['@prisma/*', 'prisma', 'ioredis', 'redis', 'pg', 'bullmq'],
-  message: 'apps/web must not depend on database or infrastructure packages. Use the API.',
+// Infrastructure modules (config, database, redis) are leaves: they never depend on business or sibling modules,
+// except that database and redis may use config.
+const INFRA_MODULE_NO_SIBLINGS = {
+  regex: '^\\.\\./[^/.][^/]*(/.*)?$',
+  message: 'Infrastructure modules must not depend on other modules.',
 };
+const INFRA_MODULE_ONLY_CONFIG = {
+  regex: '^\\.\\./(?!config(/|$))[^/.][^/]*(/.*)?$',
+  message: 'Infrastructure modules must not depend on other modules (only on ../config).',
+};
+
+// ---------------------------------------------------------------------------------------------------------
+// apps/api: layers inside a domain module (domain / application / infrastructure / presentation)
+// Direction: presentation -> application -> domain <- infrastructure
+// ---------------------------------------------------------------------------------------------------------
+
+const FRAMEWORK_AND_DRIVERS = [
+  '@nestjs/*',
+  'express',
+  'nestjs-pino',
+  'pino',
+  'pino-http',
+  '@prisma/*',
+  'prisma',
+  'ioredis',
+];
+const importsLayer = (...layers) => ({
+  regex: `(^|/)(${layers.join('|')})(/|$)`,
+  message: `This layer must not import from: ${layers.join(', ')}. Dependencies point inwards (presentation -> application -> domain; infrastructure -> domain).`,
+});
+const DOMAIN_PURE = {
+  group: FRAMEWORK_AND_DRIVERS,
+  message: 'The domain layer is plain TypeScript: no NestJS, HTTP, Prisma or Redis imports.',
+};
+const NO_INFRA_MODULES = {
+  regex: '(^|/)(database|redis)(/|$)',
+  message:
+    'Do not import the database or redis modules here. Use a repository port (domain) or a repository (infrastructure).',
+};
+const APPLICATION_NO_DRIVER_ACCESS = {
+  group: ['**/database', '**/redis'],
+  importNames: ['PrismaService', 'RedisService'],
+  message:
+    'Application services use repositories and TransactionRunner, never PrismaService/RedisService directly.',
+};
+const NO_DRIVERS = {
+  group: ['@prisma/*', 'prisma', 'ioredis', 'express'],
+  message: 'Drivers and Express are not allowed in this layer.',
+};
+
+const restrict = (...patterns) => ['error', { patterns }];
+const BASE = [DEEP_IMPORT, NO_APP_IMPORT];
+const API_MODULE_BASE = [...BASE, MODULE_INTERNALS_FROM_OUTSIDE, MODULE_INTERNALS_FROM_SIBLING];
+// Inside layered folders (domain/, application/, ...) the number of "../" to reach a sibling module depends on folder
+// depth, so a regex cannot tell it from an import inside the same module. tools/check-module-boundaries.mjs enforces
+// "sibling modules only through index.ts" for every depth and runs as part of `lint`.
+const LAYERED_MODULE_BASE = [...BASE, MODULE_INTERNALS_FROM_OUTSIDE];
 
 export default tseslint.config(
   {
@@ -73,7 +145,7 @@ export default tseslint.config(
   {
     rules: {
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
-      'no-restricted-imports': ['error', { patterns: [DEEP_IMPORT, NO_APP_IMPORT] }],
+      'no-restricted-imports': restrict(...BASE),
     },
   },
   {
@@ -100,89 +172,111 @@ export default tseslint.config(
   },
   {
     files: ['packages/contracts/**/*.ts'],
-    rules: {
-      'no-restricted-imports': ['error', { patterns: [DEEP_IMPORT, NO_APP_IMPORT, CONTRACTS_FORBIDDEN] }],
-    },
+    rules: { 'no-restricted-imports': restrict(...BASE, CONTRACTS_FORBIDDEN) },
   },
+
+  // ---- apps/api -------------------------------------------------------------------------------------------
   {
+    // Files outside modules/ (bootstrap, common, app.module, main): no drivers at all.
     files: ['apps/api/src/**/*.ts'],
     ignores: ['**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            DEEP_IMPORT,
-            NO_APP_IMPORT,
-            MODULE_INTERNALS_FROM_OUTSIDE,
-            PRISMA_ONLY_IN_DATABASE_MODULE,
-            IOREDIS_ONLY_IN_REDIS_MODULE,
-          ],
-        },
-      ],
+      'no-restricted-imports': restrict(
+        ...BASE,
+        MODULE_INTERNALS_FROM_OUTSIDE,
+        PRISMA_RESTRICTED,
+        IOREDIS_RESTRICTED,
+      ),
     },
   },
   {
+    // Default for every module: no drivers; reach siblings only through their index.
     files: ['apps/api/src/modules/**/*.ts'],
     ignores: ['**/*.spec.ts'],
+    rules: { 'no-restricted-imports': restrict(...API_MODULE_BASE, PRISMA_RESTRICTED, IOREDIS_RESTRICTED) },
+  },
+  {
+    files: ['apps/api/src/modules/config/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            DEEP_IMPORT,
-            NO_APP_IMPORT,
-            MODULE_INTERNALS_FROM_OUTSIDE,
-            MODULE_INTERNALS_FROM_SIBLING,
-            PRISMA_ONLY_IN_DATABASE_MODULE,
-            IOREDIS_ONLY_IN_REDIS_MODULE,
-          ],
-        },
-      ],
+      'no-restricted-imports': restrict(
+        ...API_MODULE_BASE,
+        PRISMA_RESTRICTED,
+        IOREDIS_RESTRICTED,
+        INFRA_MODULE_NO_SIBLINGS,
+      ),
     },
   },
   {
-    // The two infrastructure modules may import their own driver (and not the other's).
     files: ['apps/api/src/modules/database/**/*.ts'],
     ignores: ['**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            DEEP_IMPORT,
-            NO_APP_IMPORT,
-            MODULE_INTERNALS_FROM_OUTSIDE,
-            MODULE_INTERNALS_FROM_SIBLING,
-            IOREDIS_ONLY_IN_REDIS_MODULE,
-          ],
-        },
-      ],
+      'no-restricted-imports': restrict(...API_MODULE_BASE, IOREDIS_RESTRICTED, INFRA_MODULE_ONLY_CONFIG),
     },
   },
   {
     files: ['apps/api/src/modules/redis/**/*.ts'],
     ignores: ['**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            DEEP_IMPORT,
-            NO_APP_IMPORT,
-            MODULE_INTERNALS_FROM_OUTSIDE,
-            MODULE_INTERNALS_FROM_SIBLING,
-            PRISMA_ONLY_IN_DATABASE_MODULE,
-          ],
-        },
-      ],
+      'no-restricted-imports': restrict(...API_MODULE_BASE, PRISMA_RESTRICTED, INFRA_MODULE_ONLY_CONFIG),
     },
   },
+  // Layers of a domain module. They apply only to modules that choose to have these folders.
+  {
+    files: ['apps/api/src/modules/*/domain/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': restrict(
+        ...LAYERED_MODULE_BASE,
+        DOMAIN_PURE,
+        importsLayer('application', 'infrastructure', 'presentation'),
+        NO_INFRA_MODULES,
+      ),
+    },
+  },
+  {
+    files: ['apps/api/src/modules/*/application/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': restrict(
+        ...LAYERED_MODULE_BASE,
+        NO_DRIVERS,
+        importsLayer('infrastructure', 'presentation'),
+        APPLICATION_NO_DRIVER_ACCESS,
+      ),
+    },
+  },
+  {
+    files: ['apps/api/src/modules/*/infrastructure/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    // Persistence adapters: the one place in a domain module where Prisma is allowed.
+    rules: {
+      'no-restricted-imports': restrict(
+        ...LAYERED_MODULE_BASE,
+        IOREDIS_RESTRICTED,
+        importsLayer('presentation'),
+      ),
+    },
+  },
+  {
+    files: ['apps/api/src/modules/*/presentation/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': restrict(
+        ...LAYERED_MODULE_BASE,
+        NO_DRIVERS,
+        importsLayer('infrastructure'),
+        NO_INFRA_MODULES,
+      ),
+    },
+  },
+
+  // ---- apps/web -------------------------------------------------------------------------------------------
   {
     files: ['apps/web/**/*.{ts,tsx}'],
     plugins: { 'react-hooks': reactHooks },
     rules: {
-      'no-restricted-imports': ['error', { patterns: [DEEP_IMPORT, NO_APP_IMPORT, WEB_FORBIDDEN] }],
+      'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN),
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
     },

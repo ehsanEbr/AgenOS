@@ -37,6 +37,8 @@ jobs:
 
       - run: pnpm format:check
       - run: pnpm lint
+      - name: Architecture checks (module boundaries + their tests)
+        run: pnpm check:architecture
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build

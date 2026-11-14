@@ -1,5 +1,6 @@
-import { ArgumentMetadata, BadRequestException, PipeTransform } from '@nestjs/common';
+import { ArgumentMetadata, PipeTransform } from '@nestjs/common';
 import type { z } from 'zod';
+import { AppError } from './app-error';
 
 /** A class that carries a Zod schema; use as the declared type of `@Body()`, `@Query()` or `@Param()`. */
 export interface ZodDto<T extends z.ZodType = z.ZodType> {
@@ -27,6 +28,7 @@ function isZodDto(value: unknown): value is ZodDto {
 /**
  * Global validation pipe (registered via APP_PIPE). Parameters typed with a ZodDto are validated
  * and replaced by the parsed value; everything else passes through unchanged.
+ * Failures are `AppError('validation')` -> HTTP 400 `validation_error` with per-field details.
  */
 export class ZodValidationPipe implements PipeTransform {
   transform(value: unknown, metadata: ArgumentMetadata): unknown {
@@ -34,9 +36,7 @@ export class ZodValidationPipe implements PipeTransform {
 
     const result = metadata.metatype.schema.safeParse(value);
     if (!result.success) {
-      throw new BadRequestException({
-        code: 'validation_error',
-        message: 'Request validation failed',
+      throw new AppError('validation', 'validation_error', 'Request validation failed', {
         details: result.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
       });
     }

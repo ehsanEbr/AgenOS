@@ -42,6 +42,13 @@ describe('PrismaService', () => {
     expect(disconnect).toHaveBeenCalledOnce();
   });
 
+  it('disconnects exactly once even if shutdown is triggered twice (hook + manual close)', async () => {
+    const disconnect = vi.spyOn(service, '$disconnect').mockResolvedValue(undefined);
+    await Promise.all([service.onModuleDestroy(), service.onModuleDestroy()]);
+    await service.onModuleDestroy();
+    expect(disconnect).toHaveBeenCalledOnce();
+  });
+
   it('completes shutdown even if disconnect fails (database never connected)', async () => {
     vi.spyOn(service, '$disconnect').mockRejectedValue(
       new Error("Can't reach database server at postgresql://user:very-secret@127.0.0.1:1"),

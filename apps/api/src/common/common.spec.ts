@@ -1,8 +1,9 @@
-import { BadRequestException, HttpException, NotFoundException } from '@nestjs/common';
+import { HttpException, NotFoundException } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { toApiError } from './api-error';
+import { AppError, type AppErrorKind, HTTP_STATUS_BY_ERROR_KIND } from './app-error';
+import { classifyError, toApiError } from './api-error';
 import { type CorrelatedRequest, correlationIdMiddleware } from './correlation-id.middleware';
 import { ZodValidationPipe, createZodDto } from './zod-validation.pipe';
 
@@ -31,7 +32,27 @@ describe('correlationIdMiddleware', () => {
   });
 });
 
-describe('toApiError', () => {
+describe('AppError', () => {
+  const kinds = Object.keys(HTTP_STATUS_BY_ERROR_KIND) as AppErrorKind[];
+
+  it.each(kinds)('maps kind "%s" to its HTTP status', (kind) => {
+    const { status, body } = toApiError(new AppError(kind, 'some_code', 'Safe message'), 'cid');
+    expect(status).toBe(HTTP_STATUS_BY_ERROR_KIND[kind]);
+    expect(body).toEqual({ code: 'some_code', message: 'Safe message', correlationId: 'cid' });
+  });
+
+  it('carries client-safe details but never the cause', () => {
+    const cause = new Error('SELECT * FROM secrets WHERE token = hunter2');
+    const { body } = toApiError(
+      new AppError('conflict', 'name_taken', 'Name already in use', { details: { field: 'name' }, cause }),
+      'cid',
+    );
+    expect(body.details).toEqual({ field: 'name' });
+    expect(JSON.stringify(body)).not.toContain('hunter2');
+  });
+});
+
+describe('toApiError / classifyError', () => {
   it('maps HttpExceptions with structured bodies', () => {
     const { status, body } = toApiError(
       new NotFoundException({ code: 'thing_missing', message: 'nope' }),
@@ -51,6 +72,13 @@ describe('toApiError', () => {
     expect(status).toBe(500);
     expect(body).toEqual({ code: 'internal_error', message: 'Internal server error', correlationId: 'cid' });
   });
+
+  it('distinguishes application errors from unexpected ones', () => {
+    expect(classifyError(new AppError('not_found', 'x', 'y'))).toBe('application');
+    expect(classifyError(new NotFoundException())).toBe('http');
+    expect(classifyError(new Error('boom'))).toBe('unexpected');
+    expect(classifyError('a string')).toBe('unexpected');
+  });
 });
 
 describe('ZodValidationPipe', () => {
@@ -62,15 +90,16 @@ describe('ZodValidationPipe', () => {
     expect(pipe.transform({ message: ' hello ' }, meta)).toEqual({ message: 'hello' });
   });
 
-  it('throws a structured validation error', () => {
+  it('throws a validation AppError with per-field details', () => {
     try {
       pipe.transform({ message: '' }, meta);
       expect.unreachable();
     } catch (e) {
-      expect(e).toBeInstanceOf(BadRequestException);
-      const response = (e as BadRequestException).getResponse() as { code: string; details: unknown[] };
-      expect(response.code).toBe('validation_error');
-      expect(response.details).toHaveLength(1);
+      expect(e).toBeInstanceOf(AppError);
+      const error = e as AppError;
+      expect(error.kind).toBe('validation');
+      expect(error.code).toBe('validation_error');
+      expect(error.details).toHaveLength(1);
     }
   });
 

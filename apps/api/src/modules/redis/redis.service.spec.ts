@@ -84,6 +84,14 @@ describe('RedisService', () => {
     expect(client.disconnect).not.toHaveBeenCalled();
   });
 
+  it('closes exactly once even if shutdown is triggered twice (hook + manual close)', async () => {
+    client.status = 'ready';
+    await Promise.all([service.onModuleDestroy(), service.onModuleDestroy()]);
+    await service.onModuleDestroy();
+    expect(client.quit).toHaveBeenCalledOnce();
+    expect(client.disconnect).not.toHaveBeenCalled();
+  });
+
   it('hard-closes when not connected (no hanging on shutdown)', async () => {
     client.status = 'reconnecting';
     await service.onModuleDestroy();
