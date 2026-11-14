@@ -38,5 +38,8 @@ TypeScript, Nx + pnpm, NestJS, React/Vite. Current phase: **1.1 Monorepo Foundat
   directly (not through Nx) build contracts first: `pnpm --filter @agentos/contracts build`.
 - API tests need SWC (`unplugin-swc`) so NestJS decorator metadata is emitted under Vitest.
 - pnpm 11 blocks install scripts; allowed packages are listed in `pnpm-workspace.yaml` (`allowBuilds`).
+- Run lint through Nx (`pnpm lint` / `nx lint <project>`). A bare `eslint` run without a cached Nx project graph skips
+  `@nx/enforce-module-boundaries` (warning only).
+- TypeScript is pinned to one version (`overrides` in `pnpm-workspace.yaml`); keep root, api and web in sync.
 - Port 5173 may be taken by other local projects; Vite picks another port and prints it.
 - The earlier Phase 1 build (Prisma, BullMQ, worker, Compose) lives on branch `phase-1-foundation`.

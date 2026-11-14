@@ -8,17 +8,12 @@ const DEEP_IMPORT = {
   message: 'Import workspace packages through their public entry point only (no deep imports).',
 };
 
-// Applications are deployables, not libraries: nothing may import them (Nx cannot map these names to
-// projects, so the module-boundary rule alone would miss them).
+// Only workspace *packages* are importable; applications (api, web, any future worker or scheduler) never are.
+// This is an allowlist so a new app cannot be imported by accident. Adding a shared package means adding it
+// here, which is deliberate friction (spec: extract shared code only with multiple consumers).
+const IMPORTABLE_WORKSPACE_PACKAGES = ['contracts'];
 const NO_APP_IMPORT = {
-  group: [
-    '@agentos/api',
-    '@agentos/api/*',
-    '@agentos/web',
-    '@agentos/web/*',
-    '@agentos/*-worker',
-    '@agentos/*-worker/*',
-  ],
+  group: ['@agentos/*', ...IMPORTABLE_WORKSPACE_PACKAGES.map((name) => `!@agentos/${name}`)],
   message: 'Applications cannot be imported. Share code through a package (e.g. @agentos/contracts).',
 };
 

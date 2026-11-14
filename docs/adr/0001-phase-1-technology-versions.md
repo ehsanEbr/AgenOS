@@ -28,3 +28,53 @@ recent; the foundation should not also be a migration exercise.
   branch `phase-1-foundation` for the previous choices.
 - `@agentos/config` and `@agentos/logger` packages from the earlier build were folded into `apps/api` because
   there is a single consumer (see ADR-0002).
+
+## Version audit (Phase 1.1 verification)
+
+The specification and ADRs name technologies but pin **no versions**, so nothing below deviates from a documented
+version. "Latest" is what npm tagged `latest` on the audit date (2026-11-14).
+
+| Technology                 | Declared range                 | Locked                                                                                | npm latest           | Note                                                                |
+| -------------------------- | ------------------------------ | ------------------------------------------------------------------------------------- | -------------------- | ------------------------------------------------------------------- |
+| Node.js                    | `>=22.12.0` (engines)          | CI: `22.x`; dev machine 22.14.0                                                       | -                    | Meets Vite 7 (`^20.19 \|\| >=22.12`) and Nest 11 (`>=20`).          |
+| pnpm                       | `pnpm@11.5.2` (packageManager) | 11.5.2                                                                                | -                    | CI action `pnpm/action-setup@v6` reads this field.                  |
+| TypeScript                 | `~5.8.3`                       | 5.8.3 (single copy, enforced by `overrides`)                                          | 7.0.2                | See "TypeScript" below.                                             |
+| NestJS                     | `^11.1.0`                      | 11.2.9 (`common`, `core`, `platform-express`, `testing`); swagger 11.4.8; cli 11.0.24 | 12.5.0               | One major behind latest.                                            |
+| Nx                         | `^21.2.0`                      | 21.6.11                                                                               | 24.0.6               | Three majors behind latest.                                         |
+| Vite                       | `^7.0.0`                       | 7.3.8                                                                                 | 8.3.8                | `@vitejs/plugin-react` 5.2.0 supports Vite 4-8.                     |
+| Vitest                     | `^3.2.0`                       | 3.2.7                                                                                 | 5.1.0                | Supports Vite 7.                                                    |
+| React / React DOM          | `^19.1.0`                      | 19.3.1                                                                                | 19.3.1               | Current.                                                            |
+| Ant Design                 | `^5.26.0`                      | 5.29.3 (`@ant-design/icons` 5.6.1)                                                    | **6.7.0**            | See "Ant Design" below.                                             |
+| React Router               | `react-router-dom ^7.6.0`      | 7.18.5                                                                                | `react-router` 8.5.1 | See "React Router" below.                                           |
+| TanStack Query             | `^5.80.0`                      | 5.107.1                                                                               | 5.107.1              | Current.                                                            |
+| Zustand                    | `^5.0.0`                       | 5.1.0                                                                                 | -                    |                                                                     |
+| Zod                        | `^4.0.0` in all three projects | 4.6.7 (single copy)                                                                   | 4.6.7                | Current.                                                            |
+| ESLint / typescript-eslint | `^9.30.0` / `^8.35.0`          | 9.39.5 / 8.72.2                                                                       | ESLint 10.14.0       | ESLint 9 is deprecated upstream; plan an upgrade (see limitations). |
+
+Compatibility: `pnpm install` reports no unmet peer dependencies. Lockfile contains one copy of React, Zod, Vite,
+Vitest, Ant Design and TypeScript.
+
+### TypeScript
+
+`@nestjs/cli` (used by `nest build`) and `tsup` (d.ts generation) each pulled their own TypeScript 5.9.3 while
+`tsc --noEmit` used 5.8.3, so the code was type-checked and compiled with different compilers. `overrides:
+typescript: ~5.8.3` in `pnpm-workspace.yaml` forces a single version. Staying below 6/7 is deliberate:
+typescript-eslint 8.x supports `<6.1`, and TypeScript 7 changes the toolchain.
+
+### Ant Design 5 versus 6
+
+Neither the specification nor any ADR mentions Ant Design 6; the specification says only "Ant Design". Ant Design 5 was
+chosen in this phase because it was the established, best-documented major at decision time, **not**
+because of a compatibility problem. Ant Design 6.7.0 is now `latest` and requires React >= 18, which is satisfied.
+
+Evidence from a throwaway spike (not merged): bumping `antd` to `^6.7.0` and `@ant-design/icons` to `^6.0.0` with no
+source changes passed web typecheck, all 11 web tests and the production build. This is jsdom-level evidence only;
+visual differences were not reviewed. The web app uses just Alert, Button, ConfigProvider, Layout, Menu, Result, Spin,
+Tag and Typography, so migrating now is cheap and gets more expensive with every feature built on top.
+**Open decision for the maintainers:** stay on 5 (current) or move to 6 before Phase 1.2 adds UI.
+
+### React Router
+
+The specification says "React Router". Version 7 is used via the `react-router-dom` compatibility package, which
+re-exports `react-router`. Importing from `react-router` directly is the forward path; it is a mechanical change
+deferred to avoid unrelated refactoring.

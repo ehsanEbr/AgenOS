@@ -13,7 +13,7 @@ Compose, `@agentos/config` and `@agentos/logger` packages, and a job-submission 
 - Fold `@agentos/config` and `@agentos/logger` into `apps/api` (`modules/config`, `common/logging.ts`). With one
   consumer they were an unnecessary shared abstraction. Re-extract them when a second backend process (worker)
   exists.
-- Replace the dependency-aware readiness probe (`/health/ready`) with a plain liveness endpoint (`/health`), since
+- Replace the dependency-aware readiness probe (`/health/ready`) with a plain liveness endpoint (`GET /api/v1/health`), since
   there are no dependencies to check.
 - Remove the web auth stub (`AuthBoundary`): authentication is out of scope.
 

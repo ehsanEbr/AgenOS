@@ -33,7 +33,17 @@ All rules run in `pnpm lint` (`eslint.config.mjs`). Each was verified with a pla
 | No wildcard/deep access into packages or domains     | `@agentos/*/*` deep imports banned; inside `apps/api`, another module may only be imported through its `index.ts`                                                                           |
 | No unnecessary shared abstractions                   | Only `contracts` exists as a shared package; config and logging live in `apps/api` until a second consumer needs them                                                                       |
 
-Not independently tested: the circular-dependency check (relies on the Nx rule's documented behaviour).
+Future workers (`apps/*-worker`, `apps/scheduler`) tagged `type:app` + `scope:backend` can import `@agentos/contracts`
+and nothing else from the workspace. This was verified with a temporary worker project: contracts import allowed;
+imports of web, api, a not-yet-existing app, deep paths and relative cross-project paths all rejected. Adding a new
+importable package means adding it to `IMPORTABLE_WORKSPACE_PACKAGES` in `eslint.config.mjs`.
+
+Caveats:
+
+- `@nx/enforce-module-boundaries` is **skipped with a warning** when Nx has no cached project graph (e.g. a bare
+  `eslint` run right after `nx reset` or a fresh clone). `pnpm lint` / `nx lint` always build the graph first, and CI
+  uses them. Editors may not enforce the Nx rule until Nx has run once.
+- The circular-dependency check relies on the Nx rule's documented behaviour and was not tested with a planted cycle.
 
 ## apps/api
 
