@@ -21,8 +21,9 @@ Queues, workers, schedulers and every domain entity are **out of scope** and arr
   so a dev restart keeps data, **not** because Redis may hold business data. Never store anything in Redis that cannot
   be rebuilt from PostgreSQL.
 - Both run as Docker Compose services on the dedicated bridge network `agentos-net`. Compose project name: `agentos`.
-- Prisma and ioredis are used **only** inside `apps/api` and only inside their own module (enforced by ESLint).
-  Nothing in `packages/contracts` or `apps/web` knows about them.
+- Prisma and ioredis are used **only** inside `apps/api`: ioredis inside `modules/redis`, Prisma inside `modules/database` and the
+  `infrastructure/` layer of domain modules (enforced by ESLint, see [backend.md](backend.md)). Nothing in `packages/contracts` or
+  `apps/web` knows about them.
 
 ## Environment setup
 
@@ -158,6 +159,8 @@ Notes:
   `node_modules`.
 
 ## API infrastructure modules
+
+Transactions, database error handling, lifecycle ownership and how a future worker reuses this: see [backend.md](backend.md) sections 4 and 7.
 
 ```text
 apps/api/src/modules/

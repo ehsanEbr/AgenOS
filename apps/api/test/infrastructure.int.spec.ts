@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { readinessResponseSchema } from '@agentos/contracts';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
@@ -108,7 +108,9 @@ describe('infrastructure (integration: real PostgreSQL + Redis)', () => {
   it('closes both connections on shutdown', async () => {
     const app = await createApp();
     const redis = app.get(RedisService);
-    expect(redis.client.status).toBe('ready');
+    // The API deliberately starts even if Redis is slow to answer and keeps connecting in the background, so wait for it
+    // instead of asserting an instantaneous state: this test is about shutdown, not about startup timing.
+    await vi.waitFor(() => expect(redis.client.status).toBe('ready'), { timeout: 5000 });
     await app.close();
     expect(['end', 'close']).toContain(redis.client.status);
   });

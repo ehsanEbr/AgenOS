@@ -22,6 +22,7 @@ recent; the foundation should not also be a migration exercise.
 | Nx tags (`type:*`, `scope:*`) in package.json                                                   | Enforce dependency direction via ESLint.                                                                                                       |
 | Prisma 6.19.3 (`prisma`, `@prisma/client`), exact pins                                          | PostgreSQL ORM named by the spec; last major with the classic generator. See ADR-0003.                                                         |
 | `ioredis` 5.10.1, exact pin                                                                     | Redis client; the version BullMQ 5.x depends on, so a later BullMQ phase adds no second copy. See ADR-0003.                                    |
+| `express` 5.2.1, exact pin (devDependency of `apps/api`)                                        | Used only to test the logging pipeline against a real Express app; same version Nest's adapter already installs. See ADR-0004.                 |
 | Docker images `pgvector/pgvector:pg17` (PostgreSQL 17.11) and `redis:7.4-alpine` (Redis 7.4.12) | PostgreSQL with pgvector as selected by the spec; Redis for cache and ephemeral state only.                                                    |
 
 ## Consequences

@@ -1,18 +1,13 @@
-import 'reflect-metadata';
-import { Body, Controller, Post, type INestApplication } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
+import type { INestApplication } from '@nestjs/common';
+import { Body, Controller, Post } from '@nestjs/common';
 import request from 'supertest';
 import { z } from 'zod';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { apiErrorSchema, healthResponseSchema, readinessResponseSchema } from '@agentos/contracts';
-import { AppModule } from '../src/app.module';
-import { configureApp } from '../src/bootstrap/configure-app';
 import { createZodDto } from '../src/common/zod-validation.pipe';
-import { APP_CONFIG, type ApiConfig } from '../src/modules/config';
-import { PrismaService } from '../src/modules/database';
-import { RedisService } from '../src/modules/redis';
+import { type InfrastructureStubs, createTestApp } from './support/create-test-app';
 
-// Phase 1.1 has no business endpoints; this test-only controller exercises the global
+// Phase 1.x has no business endpoints; this test-only controller exercises the global
 // validation pipeline and the error contract end to end.
 class EchoDto extends createZodDto(z.object({ name: z.string().trim().min(1) })) {}
 
@@ -29,32 +24,17 @@ class EchoController {
   }
 }
 
-// Stub infrastructure: this suite verifies the HTTP pipeline, not PostgreSQL/Redis
-// (real connectivity is covered by test/infrastructure.int.spec.ts).
-const postgres = { checkConnection: vi.fn<() => Promise<void>>() };
-const redis = { checkConnection: vi.fn<() => Promise<void>>() };
-
 describe('API pipeline (e2e, in-process, stubbed infrastructure)', () => {
   let app: INestApplication;
+  let stubs: InfrastructureStubs;
 
   beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({
-      imports: [AppModule],
-      controllers: [EchoController],
-    })
-      .overrideProvider(PrismaService)
-      .useValue(postgres)
-      .overrideProvider(RedisService)
-      .useValue(redis)
-      .compile();
-    app = moduleRef.createNestApplication({ bufferLogs: true });
-    configureApp(app, app.get<ApiConfig>(APP_CONFIG));
-    await app.init();
+    ({ app, stubs } = await createTestApp({ controllers: [EchoController] }));
   });
 
   beforeEach(() => {
-    postgres.checkConnection.mockReset().mockResolvedValue(undefined);
-    redis.checkConnection.mockReset().mockResolvedValue(undefined);
+    stubs.postgres.checkConnection.mockReset().mockResolvedValue(undefined);
+    stubs.redis.checkConnection.mockReset().mockResolvedValue(undefined);
   });
 
   afterAll(async () => {
@@ -68,23 +48,22 @@ describe('API pipeline (e2e, in-process, stubbed infrastructure)', () => {
     });
 
     it('stays 200 when infrastructure is down (a dependency outage must not restart the process)', async () => {
-      postgres.checkConnection.mockRejectedValue(new Error('down'));
-      redis.checkConnection.mockRejectedValue(new Error('down'));
+      stubs.postgres.checkConnection.mockRejectedValue(new Error('down'));
+      stubs.redis.checkConnection.mockRejectedValue(new Error('down'));
       await request(app.getHttpServer()).get('/api/v1/health').expect(200);
-      expect(postgres.checkConnection).not.toHaveBeenCalled();
-      expect(redis.checkConnection).not.toHaveBeenCalled();
+      expect(stubs.postgres.checkConnection).not.toHaveBeenCalled();
+      expect(stubs.redis.checkConnection).not.toHaveBeenCalled();
     });
   });
 
   describe('readiness', () => {
     it('GET /api/v1/health/ready is 200 when PostgreSQL and Redis are up', async () => {
       const res = await request(app.getHttpServer()).get('/api/v1/health/ready').expect(200);
-      const body = readinessResponseSchema.parse(res.body);
-      expect(body.status).toBe('ready');
+      expect(readinessResponseSchema.parse(res.body).status).toBe('ready');
     });
 
     it('is 503 with the same contract when PostgreSQL is down', async () => {
-      postgres.checkConnection.mockRejectedValue(new Error('connect ECONNREFUSED'));
+      stubs.postgres.checkConnection.mockRejectedValue(new Error('connect ECONNREFUSED'));
       const res = await request(app.getHttpServer()).get('/api/v1/health/ready').expect(503);
       const body = readinessResponseSchema.parse(res.body);
       expect(body.status).toBe('not_ready');
@@ -93,13 +72,13 @@ describe('API pipeline (e2e, in-process, stubbed infrastructure)', () => {
     });
 
     it('is 503 when Redis is down', async () => {
-      redis.checkConnection.mockRejectedValue(new Error('connect ECONNREFUSED'));
+      stubs.redis.checkConnection.mockRejectedValue(new Error('connect ECONNREFUSED'));
       const res = await request(app.getHttpServer()).get('/api/v1/health/ready').expect(503);
       expect(readinessResponseSchema.parse(res.body).checks.redis.status).toBe('down');
     });
 
     it('does not leak infrastructure details and keeps the correlation id', async () => {
-      postgres.checkConnection.mockRejectedValue(
+      stubs.postgres.checkConnection.mockRejectedValue(
         new Error('auth failed for postgresql://u:hunter2@db.internal/app'),
       );
       const res = await request(app.getHttpServer())
@@ -111,7 +90,7 @@ describe('API pipeline (e2e, in-process, stubbed infrastructure)', () => {
     });
   });
 
-  describe('pipeline (unchanged from Phase 1.1)', () => {
+  describe('pipeline (unchanged since Phase 1.1)', () => {
     it('generates a correlation id and echoes a supplied one', async () => {
       const generated = await request(app.getHttpServer()).get('/api/v1/health');
       expect(generated.headers['x-correlation-id']).toMatch(/^[0-9a-f-]{36}$/);

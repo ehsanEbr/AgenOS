@@ -27,7 +27,7 @@ queue or worker. These choices constrain later phases, so they are recorded here
    the modules that use them, so dependencies stay visible and boundary rules can reason about them. Services are still
    singletons (Nest modules are singletons).
 
-6. **Drivers are confined by lint.** `@prisma/client`/`prisma` may be imported only in `modules/database`, `ioredis` only in
+6. **Drivers are confined by lint.** _(Amended by [ADR-0004](0004-backend-architecture.md) decision 4: Prisma is also allowed in a domain module's `infrastructure/` layer.)_ `@prisma/client`/`prisma` may be imported only in `modules/database`, `ioredis` only in
    `modules/redis`. `apps/web` and `packages/contracts` may import neither. Domain modules will receive data through their own
    repositories, never Prisma types, and `packages/contracts` stays Zod-only.
 
