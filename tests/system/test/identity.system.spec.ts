@@ -70,7 +70,7 @@ describe('the migrations ran as the migration role and the API runs as its own r
          has_table_privilege('agentos_api', 'security.audit_log', 'UPDATE'),
          has_table_privilege('agentos_api', 'security.audit_log', 'DELETE'))`,
     );
-    expect(privileges.stdout.trim()).toBe('true,false,true,false,false,false');
+    expect(privileges.stdout.trim()).toBe('t,f,t,f,f,f'); // psql prints booleans as t and f: INSERT on user yes, DELETE no; audit INSERT yes, SELECT, UPDATE, DELETE no;
   });
 });
 
