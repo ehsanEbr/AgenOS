@@ -55,7 +55,8 @@ describe('the API starts without its dependencies and becomes ready when they ap
 
   it('becomes ready by itself when its dependencies start, without being restarted', async () => {
     const before = await stack.state('api');
-    await stack.up(['postgres', 'redis']); // waits for their health checks
+    // postgres, redis and the role provisioning the API's database login depends on; waits for their health checks
+    await stack.up(['postgres', 'redis', 'db-roles']);
 
     await waitFor(async () => (await readiness()).http === 200, {
       message: 'API readiness 200 after dependencies came up',

@@ -7,8 +7,12 @@ Platform for designing, running and observing AI agent systems. See the
 > routing, an API client and documented conventions; an API skeleton with module, error, transaction, logging and testing conventions; shared contracts; and local
 > PostgreSQL + Redis infrastructure with Prisma and readiness checks; and an independent, framework-free worker runtime (BullMQ) with a
 > typed job contract, retries, graceful shutdown and Redis recovery. The whole system runs in containers (Docker Compose) with a
-> supervised worker, health checks and system-level tests, and CI is split into verification, integration and system jobs. There are
-> no database tables, domain jobs, authentication or product functionality yet.
+> supervised worker, health checks and system-level tests, and CI is split into verification, integration and system jobs.
+>
+> **Phase 2 (identity, organizations and projects) is in progress; step 2.1 is implemented:** local email/password authentication with
+> server-side sessions (cookie or bearer token), rate limiting that fails closed, an append-only audit trail, and separate database roles
+> for the API and for migrations ([ADR-0010](docs/adr/0010-identity-organizations-projects.md)). There are no organizations, projects,
+> domain jobs or other product functionality yet.
 >
 > An earlier, larger Phase 1 build (including a BullMQ worker) is preserved on the git branch `phase-1-foundation`.
 

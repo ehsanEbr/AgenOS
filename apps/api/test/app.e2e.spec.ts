@@ -6,11 +6,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { apiErrorSchema, healthResponseSchema, readinessResponseSchema } from '@agentos/contracts';
 import { createZodDto } from '../src/common/zod-validation.pipe';
 import { type InfrastructureStubs, createTestApp } from './support/create-test-app';
+import { Public } from '../src/modules/identity';
 
 // Phase 1.x has no business endpoints; this test-only controller exercises the global
 // validation pipeline and the error contract end to end.
 class EchoDto extends createZodDto(z.object({ name: z.string().trim().min(1) })) {}
 
+// A test fixture for the HTTP pipeline, not for authentication: public on purpose (default-deny is tested in identity.e2e.spec.ts).
+@Public()
 @Controller('test-echo')
 class EchoController {
   @Post()

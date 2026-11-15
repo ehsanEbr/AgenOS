@@ -102,8 +102,10 @@ Leftover volumes: the earlier Phase 1 build (branch `phase-1-foundation`) used v
 With the stack running, from the host:
 
 ```bash
-# psql (reads the password from DATABASE_URL in your .env)
-psql "postgresql://agentos:<POSTGRES_PASSWORD>@127.0.0.1:5432/agentos"
+# psql as the API's own role (what the application sees; the URL is DATABASE_URL in your .env)
+psql "postgresql://agentos_api:<POSTGRES_APP_PASSWORD>@127.0.0.1:5432/agentos"
+
+# psql as the migration role, which owns the tables (DATABASE_MIGRATE_URL), or as the superuser (DATABASE_ADMIN_URL)
 
 # or inside the container, no password needed:
 docker compose --env-file .env -f infrastructure/compose/docker-compose.yml exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
@@ -112,7 +114,9 @@ docker compose --env-file .env -f infrastructure/compose/docker-compose.yml exec
 docker compose --env-file .env -f infrastructure/compose/docker-compose.yml exec redis sh -c 'REDISCLI_AUTH="$REDIS_PASSWORD" redis-cli'
 ```
 
-GUI clients (DBeaver, TablePlus, Prisma Studio, ...): host `127.0.0.1`, port `5432`, user/password/database from `.env`.
+GUI clients (DBeaver, TablePlus, Prisma Studio, ...): host `127.0.0.1`, port `5432`, database from `.env`. Use the role that matches
+what you want to see: `agentos_api` shows what the application can reach (it cannot read the audit table), `agentos_migrate` owns everything.
+Three roles exist since Phase 2.1: see [docker-compose.md](docker-compose.md#database-roles).
 
 ## Prisma workflow
 
@@ -123,22 +127,29 @@ apps/api/
 ├── prisma.config.ts           Prisma 6 config: schema folder, migrations path, loads the repo .env
 └── prisma/
     ├── schema/                multi-file schema: every *.prisma file in this folder is part of the schema
-    │   └── base.prisma        generator + datasource ONLY (no models)
-    └── migrations/            created by the first `db:migrate` that has a model to migrate (committed to git)
+    │   ├── base.prisma        generator + datasource ONLY (datasource: `DATABASE_MIGRATE_URL`, `schemas = [...]`)
+    │   ├── identity.prisma    users, credentials, sessions        (PostgreSQL schema `identity`)
+    │   └── audit.prisma       the audit trail                     (PostgreSQL schema `security`)
+    └── migrations/            committed to git; applied as the migration role
 ```
 
-**Phase 1.2 defines no models, and therefore no tables and no migrations.** This is deliberate: User, Organization,
-Project, Agent, Model, MCP, ... belong to their domain phases, and inventing placeholder entities only to get a first
-migration would put artificial tables in every later schema. Verified behavior with the empty schema: `db:validate`,
-`db:generate`, `db:deploy` and `db:migrate` all succeed and create nothing in the database (not even Prisma's
-`_prisma_migrations` bookkeeping table). `db:status` exits with code 1 and says "The current database is not managed by
-Prisma Migrate" until the first migration exists.
+**Phase 1.2 defined no models; domains add theirs in their own phase.** Phase 2.1 added the first two (`identity.prisma`, `audit.prisma`)
+and the first migrations. Each domain gets one PostgreSQL schema (`@@schema("identity")`, declared in `base.prisma`), one `.prisma` file
+per module, and one migration history for the whole repository. Facts verified on Prisma 6.19.3: multi-schema needs no preview flag;
+the first migration emits `CREATE SCHEMA IF NOT EXISTS`; `_prisma_migrations` lives in `public`; a foreign key may cross schemas; one
+generated client and one transaction span all schemas; a hand-written trigger or `GRANT` in a migration causes no drift; model names must
+be unique across schemas. Two migrations exist: the generated tables, and a hand-written one with the `GRANT`s and the audit guard
+(see [backend.md](backend.md#database-roles-and-the-audit-trail)).
+
+**The Prisma CLI connects with the migration role**: the datasource URL is `env("DATABASE_MIGRATE_URL")`. The running API never reads
+that variable: `PrismaService` passes the API role's `DATABASE_URL` to the client explicitly, so the application cannot connect with
+the owner's privileges.
 
 Commands (from the repository root):
 
 | Command            | Underlying Prisma command | When to use                                                                                    |
 | ------------------ | ------------------------- | ---------------------------------------------------------------------------------------------- |
-| `pnpm db:validate` | `prisma validate`         | Check the schema. Needs `DATABASE_URL` set (it resolves `env()`)                               |
+| `pnpm db:validate` | `prisma validate`         | Check the schema. Needs `DATABASE_MIGRATE_URL` set (it resolves `env()`)                       |
 | `pnpm db:generate` | `prisma generate`         | Regenerate the client. Needs no database. Nx runs it automatically before build/typecheck/test |
 | `pnpm db:migrate`  | `prisma migrate dev`      | **Development**: creates a migration from schema changes and applies it. Needs a database      |
 | `pnpm db:deploy`   | `prisma migrate deploy`   | **CI / production**: applies committed migrations, never creates new ones                      |
@@ -156,8 +167,8 @@ Notes:
 
 - Prisma CLI does not load `.env` by itself when a `prisma.config.ts` exists; the config file loads the repository
   `.env` if present. In CI and production, variables come from the environment.
-- `prisma migrate dev` needs permission to create a shadow database. The compose user is the PostgreSQL superuser, so it
-  works locally; production roles need not have this and should only run `migrate deploy`.
+- `prisma migrate dev` needs permission to create a shadow database. In the development stack the **migration role** has `CREATEDB` for
+  that; a production migration role needs no such privilege and should only run `migrate deploy`.
 - The Prisma Client is generated into `node_modules` (not committed) and Nx runs `generate` before `build`,
   `typecheck`, `test` and `test:integration`; `generate` is deliberately never cached because its output lives in
   `node_modules`.

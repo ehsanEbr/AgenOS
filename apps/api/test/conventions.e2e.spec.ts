@@ -17,6 +17,7 @@ import { ApiStandardErrors, ApiZodBody, ApiZodQuery, ApiZodResponse } from '../s
 import { currentCorrelationId } from '../src/common/request-context';
 import { createZodDto } from '../src/common/zod-validation.pipe';
 import { createTestApp } from './support/create-test-app';
+import { Public } from '../src/modules/identity';
 
 /*
  * REFERENCE EXAMPLE of the backend conventions (docs/architecture/backend.md), built from a deliberately
@@ -70,6 +71,8 @@ class NumberRangeService {
 
 // --- thin controller: validate (global pipe) -> call service -> return. No branching, no data access. ----
 @ApiTags('test-conventions')
+// A test fixture for the HTTP pipeline, not for authentication: public on purpose (default-deny is tested in identity.e2e.spec.ts).
+@Public()
 @Controller('test-conventions')
 class ConventionsController {
   constructor(private readonly numbers: NumberRangeService) {}

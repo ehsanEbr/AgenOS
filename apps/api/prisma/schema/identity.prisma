@@ -1,0 +1,60 @@
+// Identity: users, their credentials and their sessions (ADR-0010). Owned by apps/api/src/modules/identity; no other module
+// reads these tables. Timestamps are UTC (timestamptz); identifiers are UUIDs.
+
+enum UserStatus {
+  active
+  disabled
+
+  @@schema("identity")
+}
+
+model User {
+  id          String     @id @default(uuid()) @db.Uuid
+  /// Stored lower-cased and trimmed (the contract normalizes it), so one address is one account.
+  email       String     @unique
+  displayName String     @map("display_name")
+  status      UserStatus @default(active)
+  createdAt   DateTime   @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime   @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  credential Credential?
+  sessions   Session[]
+
+  @@map("user")
+  @@schema("identity")
+}
+
+/// Kept apart from the user so another identity type (OIDC, later) is another row, not another column on the user.
+model Credential {
+  userId       String   @id @map("user_id") @db.Uuid
+  /// Versioned scrypt string: `$scrypt$v=1$ln=17,r=8,p=1,len=32$<salt>$<hash>`. Never logged, never returned.
+  passwordHash String   @map("password_hash")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@map("credential")
+  @@schema("identity")
+}
+
+/// A server-side session. The token itself is never stored: only its SHA-256 (hex).
+model Session {
+  id                String    @id @default(uuid()) @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  tokenHash         String    @unique @map("token_hash")
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  lastSeenAt        DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz(6)
+  /// Ends the session unless it is used again; moves forward on use.
+  idleExpiresAt     DateTime  @map("idle_expires_at") @db.Timestamptz(6)
+  /// Ends the session regardless of use.
+  absoluteExpiresAt DateTime  @map("absolute_expires_at") @db.Timestamptz(6)
+  revokedAt         DateTime? @map("revoked_at") @db.Timestamptz(6)
+  userAgent         String?   @map("user_agent")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@index([userId])
+  @@map("session")
+  @@schema("identity")
+}

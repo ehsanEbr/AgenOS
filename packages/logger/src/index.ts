@@ -15,6 +15,12 @@ export const REDACT_PATHS = [
   '*.apiKey',
   '*.secret',
   '*.token',
+  // Authentication (ADR-0010). pino's `*.x` matches ONE level only, so list the names a credential can travel under.
+  '*.currentPassword',
+  '*.newPassword',
+  '*.passwordHash',
+  '*.sessionToken',
+  '*.credential',
 ];
 
 export interface LoggerConfig {

@@ -39,6 +39,12 @@ export const redisUrlSchema = z.url({ protocol: /^rediss?$/ });
 /** PostgreSQL connection string (`postgresql://` or `postgres://`), including credentials. */
 export const postgresUrlSchema = z.url({ protocol: /^postgres(ql)?$/ });
 
+/**
+ * A boolean switch from an environment variable. Only the exact words `true` and `false` are accepted, so a typo such as
+ * `AUTH_ALLOW_REGISTRATION=ture` fails at startup instead of silently meaning "off" (or worse, "on").
+ */
+export const booleanSchema = z.enum(['true', 'false']).transform((value) => value === 'true');
+
 /** Comma-separated list from an environment variable: `"a, b,"` becomes `["a", "b"]`. */
 export const csvSchema = z.string().transform((value) =>
   value

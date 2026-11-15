@@ -35,12 +35,16 @@ export class AppError extends Error {
     readonly code: string,
     /** Safe to show to API clients: no stack traces, SQL, hostnames, secrets or internal identifiers. */
     message: string,
-    options: { details?: unknown; cause?: unknown } = {},
+    options: { details?: unknown; cause?: unknown; retryAfterSeconds?: number } = {},
   ) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = 'AppError';
     this.details = options.details;
+    this.retryAfterSeconds = options.retryAfterSeconds;
   }
+
+  /** For `rate_limited` and `unavailable` errors: how long the client should wait. The exception filter sends it as `Retry-After`. */
+  readonly retryAfterSeconds?: number;
 
   /** Optional structured, client-safe detail (for example per-field validation issues). */
   readonly details?: unknown;

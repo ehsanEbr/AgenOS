@@ -1,10 +1,11 @@
-# Backend architecture and conventions (Phase 1.3)
+# Backend architecture and conventions (Phase 1.3, amended in Phase 2.1)
 
 This is the rulebook for `apps/api`. Every future domain (Identity, Projects, Agent Runtime, Model Intelligence, MCP
 Gateway, Software Intelligence, Observability, Security) is built the way this document describes. Rules marked
 **[enforced]** fail `pnpm lint` or `pnpm check:architecture`; the rest are conventions reviewers check.
 
-Decisions and their reasons: [ADR-0004](../adr/0004-backend-architecture.md). Infrastructure details (Docker, Prisma
+Decisions and their reasons: [ADR-0004](../adr/0004-backend-architecture.md); identity, tenancy, authorization and audit:
+[ADR-0010](../adr/0010-identity-organizations-projects.md). Infrastructure details (Docker, Prisma
 workflow, readiness): [infrastructure.md](infrastructure.md). Workspace-level rules: [monorepo.md](monorepo.md).
 
 ## 1. Module structure
@@ -22,7 +23,8 @@ apps/api/src/
 │   ├── openapi.ts, zod-openapi.ts  OpenAPI decorators generated from contracts
 │   └── with-timeout.ts
 └── modules/
-    ├── config/  database/  redis/  health/        today's modules
+    ├── config/  database/  redis/  health/        infrastructure and operational modules
+    ├── audit/  identity/                         the first domain modules (Phase 2.1; see sections 11 and 12)
     └── <domain>/                   future domains, one folder each
 ```
 
@@ -35,9 +37,10 @@ apps/api/src/
 
 Start flat. Move to layered when the service layer starts to mix business rules with orchestration, or when rules need
 to be unit-tested without Nest or a database. **Create only the folders that have content**: no empty layers, no
-pass-through classes. Today `config`, `database`, `redis` and `health` are flat.
+pass-through classes. `config`, `database`, `redis` and `health` are flat; `identity` is layered, and `audit` has only the layers it needs
+(`application/` and `infrastructure/`, because a module that touches the database must keep Prisma in an `infrastructure/` folder).
 
-### Layered module layout (illustrative, no such module exists yet)
+### Layered module layout (illustrative; `modules/identity` is the real example)
 
 ```text
 modules/agents/
@@ -46,8 +49,9 @@ modules/agents/
 ├── domain/                       plain TypeScript: entities, value objects, domain services, policies, PORTS (interfaces)
 │   ├── agent.ts                  entity with its invariants
 │   ├── agent-status.ts           value object / state machine
-│   └── agent.repository.ts       port: `interface AgentRepository { findById(id, tx?): Promise<Agent | null> ... }`
-├── application/                  use cases: orchestration, transactions, authorization checks, throws AppError
+│                                 (a repository PORT that carries a transaction handle does NOT live here: see below)
+├── application/                  use cases: orchestration, transactions, authorization checks, throws AppError;
+│   ├── ports.ts                  repository ports `(…, db?: DatabaseClient)`, because only this layer may import the database module
 │   ├── create-agent.service.ts
 │   └── dto/                      application-level input/output types (not HTTP DTOs)
 ├── infrastructure/               adapters: the ONLY place in a domain module that may use Prisma
@@ -60,6 +64,11 @@ modules/agents/
 ```
 
 The corresponding Prisma file is `apps/api/prisma/schema/agents.prisma`; the contracts live in `packages/contracts/src/agents.ts`.
+
+**Where repository ports live (clarified in Phase 2.1).** The lint rules let the domain layer import nothing from `modules/database`, while
+the application layer may import `TransactionRunner` and the `DatabaseClient` type (never `PrismaService`). A port whose methods take a
+transaction handle therefore belongs in `application/` (see `modules/identity/application/ports.ts`); the domain keeps entities, value
+objects and pure policies (see `modules/identity/domain/`). Infrastructure implements the ports.
 
 ## 2. Ownership, visibility and dependency direction
 
@@ -370,13 +379,13 @@ Conventions:
 2. **Contracts first.** Add Zod schemas for requests/responses to `packages/contracts/src/<domain>.ts` and export them from the
    package index. No Prisma types, no NestJS.
 3. **Schema.** Add `apps/api/prisma/schema/<domain>.prisma`; run `pnpm db:migrate --name <domain>_initial`; commit the migration.
-4. **Create `modules/<domain>/`** with only the folders you need and an `index.ts` that exports the module and its public application
+4. **Create `modules/<domain>/`** (every route is authenticated by default; see section 12) with only the folders you need and an `index.ts` that exports the module and its public application
    services. Domain layer first (pure, with unit tests), then application services (fake repositories), then the Prisma repository
    (integration test in an isolated database), then the controller (e2e test with `createTestApp`).
 5. **Wire it**: import `<Domain>Module` in `AppModule.imports`. Import `DatabaseModule` in your module if repositories need Prisma.
-   Do not register global providers.
+   Do not register global providers (the composition root, `AppModule`, is the one place that does: pipe, filters, authentication guard).
 6. **Import other modules only through their `index.ts`.** Run `pnpm lint` (includes the module-boundary and cycle check).
-7. **Document the API** with `ApiTags`, `ApiZodQuery/Body/Response` and `ApiStandardErrors`.
+7. **Document the API** with `ApiTags`, `ApiZodQuery/Body/Response` and `ApiStandardErrors`. Protected routes also carry `@ApiBearerAuth()` and `@ApiCookieAuth()`; a route that must be reachable without a session says so with `@Public()` (and is added to the allowlist test in `test/identity.e2e.spec.ts`).
 8. **Run `pnpm verify` and `pnpm test:integration`**, update `docs/` if you added a convention.
 
 Checklist for reviewers: thin controllers; transactions owned by application services; no Prisma outside `infrastructure/`; `AppError`
@@ -384,12 +393,76 @@ for expected failures; contract types at the HTTP boundary; tests at the right l
 
 ## 10. Known limitations
 
-- The layer rules and the module-boundary script have been verified with planted violations and fixtures, but **no domain module exists yet**; the
-  first one will be the first real test of these conventions, and rules may need refinement. Expect an ADR amendment then.
+- The layer rules and the module-boundary script have been verified with planted violations and fixtures. The first domain modules (`audit`, `identity`) exercised them
+  in Phase 2.1: the one gap found was where transaction-carrying repository ports live (clarified above); no rule had to change.
 - Whether a repository only touches its own domain's tables, and whether a domain imports only `common/errors` from `common/`, is **review-enforced**, not lint-enforced.
 - Offset pagination only (see section 5). Idempotency keys are specified but not implemented.
 - `DatabaseClient` is an alias of Prisma's transaction client: application services can _see_ the model delegates on it. They are forbidden
   to import Prisma or `PrismaService`, and conventions say they only pass the handle to repositories, but the type system alone does not prevent misuse.
-- The request context contains only the correlation id until identity exists.
+- The request context still contains only the correlation id. The authenticated caller is **not** in it: it is attached to the request by the guard and read with `@CurrentAuth()` / `@CurrentPrincipal()` (section 12), so business code receives it explicitly.
 - Transaction retry on write conflicts is a documented option (`isTransactionConflict`), not a built-in behavior.
 - A Prisma interactive-transaction timeout surfaces as a generic `500` (it indicates a defect or overload, not an outage).
+
+## 11. Database roles and the audit trail
+
+**Three database roles (Phase 2.1; ADR-0010 decision 6).** The API connects as `agentos_api` (`DATABASE_URL`): not a superuser, owns no
+table or schema, can create nothing. Migrations run as `agentos_migrate` (`DATABASE_MIGRATE_URL`, used by the Prisma CLI and the `migrate`
+service), which owns the schemas and tables. The superuser exists for bootstrap and test tooling only. `PrismaService` is given the API
+role's URL explicitly, so application code has no way to connect with the owner's privileges. Provisioning:
+[docker-compose.md](docker-compose.md#database-roles).
+
+**Each migration grants on its own tables** to the group role `agentos_app` (the API role is a member), exactly what the module does
+and nothing more. Identity, for example, has no `DELETE` anywhere because it never deletes. Add the `GRANT`s next to the `CREATE TABLE`
+in the same domain's migration; a test (`test/identity-privileges.int.spec.ts`) lists the exact privileges so an extra grant fails CI.
+
+**Prisma schemas.** One PostgreSQL schema per domain (`identity`, `security`, ...), declared in `base.prisma` (`schemas = [...]`); every
+model and enum names its schema with `@@schema("...")`, and model names are unique across schemas. One migration history, one generated
+client, one transaction may span schemas and modules. A foreign key goes from the downstream module's table to the upstream one (the
+direction of the module dependency), `ON DELETE RESTRICT`, never across in the other direction. `pg_advisory_xact_lock` and other
+`void`-returning functions cannot be read back by Prisma: select an integer next to them.
+
+**The audit trail is append-only and written inside the transaction of the change it records:**
+
+```ts
+await this.transactions.run(async (tx) => {
+  await this.users.create(user, tx);
+  await this.audit.record({ action: 'auth.registered', resourceType: 'user', result: 'success', metadata: { bootstrap }, ... }, tx);
+});
+```
+
+- `AuditRecorder.record(event, tx)` is the only writer. Events are validated against `packages/contracts/src/audit.ts`: each action has a
+  strict metadata schema (ids, counts, enums), so a password, token or free text cannot be recorded. Add an action there, with its
+  schema, when a domain needs one.
+- If the append fails the change rolls back. Events that record a **refusal** (a failed sign-in) have no change to commit with and are
+  written in their own short transaction; a failure to write them is logged and does not change the response.
+- The application role may only `INSERT` (it has no `SELECT`: the repository uses `createMany`, never `create`, which would need
+  `RETURNING`), database triggers reject `UPDATE`, `DELETE` and `TRUNCATE`, and nothing in the API reads the table yet.
+- **What this does not protect against:** a PostgreSQL superuser, and the owner of the table or schema, can disable the triggers.
+  The protection holds against application code only as long as the application never connects as one (see "The development
+  configuration" in docker-compose.md).
+
+## 12. Authentication and the caller (Phase 2.1)
+
+- **Every route is authenticated by default.** `AuthenticationGuard` is registered globally in `AppModule`; leaving a route open takes an
+  explicit `@Public()`. Health, registration and sign-in are the only public routes; `test/identity.e2e.spec.ts` pins that list.
+- **One session model, two carriers.** A session is a row in `identity.session`; its token is 256 bits of randomness and only its SHA-256
+  is stored. The token travels in an `HttpOnly`, `SameSite=Lax` cookie (browsers) or an `Authorization: Bearer` header (API clients);
+  a request presenting both is refused. Cookie-authenticated state-changing requests must come from `WEB_ORIGIN` (CSRF defense).
+  Sessions are validated against PostgreSQL only, never Redis.
+- **The caller** is a `Principal { userId, sessionId }`. Controllers receive it with `@CurrentPrincipal()` (or the whole `RequestAuth` with
+  `@CurrentAuth()`); services take it as an argument. No organization, role or permission is in the session: authorization (a later
+  step) is evaluated from the database on every request.
+- **Rate limiting fails closed.** Sign-in, registration and password change count attempts in Redis; if Redis cannot answer, they answer
+  `503 authentication_unavailable` instead of allowing unlimited attempts. `AppError({ retryAfterSeconds })` is sent as `Retry-After`.
+- **Passwords** are hashed with scrypt (`modules/identity/domain/password-policy.ts`: N=2^17, r=8, p=1, 32-byte key, 16-byte salt,
+  explicit 256 MiB `maxmem`, two concurrent hashes per process), stored as a versioned string, upgraded on a successful sign-in when the
+  policy moves. The policy values are pinned by a unit test. Never log passwords, hashes, tokens or cookies; `packages/logger` redacts
+  the common field names and the audit contract makes recording them impossible.
+- Unknown email, wrong password and disabled account give one identical `401 invalid_credentials`, after a real or dummy hash.
+- **Emails have one canonical form.** `canonicalizeEmail` in `packages/contracts` (trim every character JavaScript trims, then lower-case) is the
+  only implementation: the request schemas and `UserDirectory` both call it. The database enforces the same invariant
+  (`identity.user_email_canonical`: printable ASCII, no upper case), so a spelling variant cannot be stored next to the canonical address.
+  Anything that reads or writes an email goes through that function; do not write a second one.
+- **Failed attempts are audited, refusals are not.** A failed sign-in (existing accounts only) and a failed password change
+  (`auth.password_change_failed`) are recorded in their own short transaction; the failure that exhausts a budget is recorded once, and the
+  `429` responses after it are not recorded again. An audit failure is logged and never changes the response.

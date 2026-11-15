@@ -8,9 +8,12 @@ import {
   readinessResponseSchema,
 } from '@agentos/contracts';
 import { ApiZodResponse } from '../../common/openapi';
+import { Public } from '../identity';
 import { HealthService } from './health.service';
 
 /** Reference example of a thin controller: no logic beyond translating the service result to HTTP. */
+/** Liveness and readiness are public: orchestrators and load balancers call them without credentials. */
+@Public()
 @ApiTags('health')
 @Controller('health')
 export class HealthController {

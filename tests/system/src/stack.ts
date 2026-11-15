@@ -128,6 +128,9 @@ export class Stack {
   private readonly overrideFile = join(this.dir, 'override.yml');
   readonly redisPassword: string;
   private readonly postgresPassword: string;
+  /** Passwords of the two database roles the stack provisions (agentos_migrate, agentos_api). */
+  readonly migratePassword: string;
+  readonly appPassword: string;
   ports = { api: 0, web: 0, postgres: 0, redis: 0 };
   readonly prefix = 'systest';
   readonly workerName = 'systest-worker';
@@ -137,16 +140,20 @@ export class Stack {
 
   private constructor(
     private readonly options: StackOptions,
-    passwords: { redis: string; postgres: string },
+    passwords: { redis: string; postgres: string; migrate: string; app: string },
   ) {
     this.redisPassword = passwords.redis;
     this.postgresPassword = passwords.postgres;
+    this.migratePassword = passwords.migrate;
+    this.appPassword = passwords.app;
   }
 
   static async create(options: StackOptions = {}): Promise<Stack> {
     const stack = new Stack(options, {
       redis: options.env?.REDIS_PASSWORD ?? randomBytes(16).toString('hex'),
       postgres: options.env?.POSTGRES_PASSWORD ?? randomBytes(16).toString('hex'),
+      migrate: options.env?.POSTGRES_MIGRATE_PASSWORD ?? randomBytes(16).toString('hex'),
+      app: options.env?.POSTGRES_APP_PASSWORD ?? randomBytes(16).toString('hex'),
     });
     try {
       stack.ports = {
@@ -158,6 +165,8 @@ export class Stack {
       const lines = {
         POSTGRES_USER: 'agentos',
         POSTGRES_PASSWORD: stack.postgresPassword,
+        POSTGRES_MIGRATE_PASSWORD: stack.migratePassword,
+        POSTGRES_APP_PASSWORD: stack.appPassword,
         POSTGRES_DB: 'agentos',
         POSTGRES_PORT: String(stack.ports.postgres),
         REDIS_PASSWORD: stack.redisPassword,
@@ -230,6 +239,23 @@ export class Stack {
       problems.push('redis password');
     if (config.services?.postgres?.environment?.POSTGRES_PASSWORD !== this.postgresPassword)
       problems.push('postgres password');
+    // The two database roles: the provisioning job must carry the throwaway passwords, and the API and the migration process must
+    // connect as their own roles with them (never as the superuser, never with a developer's credentials).
+    const provisioning = config.services?.['db-roles']?.environment;
+    if (provisioning?.MIGRATE_PASSWORD !== this.migratePassword) problems.push('migration role password');
+    if (provisioning?.APP_PASSWORD !== this.appPassword) problems.push('application role password');
+    if (
+      !String(config.services?.api?.environment?.DATABASE_URL ?? '').startsWith(
+        `postgresql://agentos_api:${this.appPassword}@`,
+      )
+    )
+      problems.push('api database credentials');
+    if (
+      !String(config.services?.migrate?.environment?.DATABASE_MIGRATE_URL ?? '').startsWith(
+        `postgresql://agentos_migrate:${this.migratePassword}@`,
+      )
+    )
+      problems.push('migrate database credentials');
     for (const [service, image] of [
       ['api', 'agentos-api'],
       ['migrate', 'agentos-api'],
@@ -509,7 +535,7 @@ export async function buildImages(): Promise<ImageRecord[]> {
   // Images are built without secrets; the placeholder passwords only satisfy Compose's "required variable" checks.
   writeFileSync(
     envFile,
-    `POSTGRES_PASSWORD=build-only\nREDIS_PASSWORD=build-only\nAGENTOS_IMAGE_TAG=${TEST_IMAGE_TAG}\nGIT_REVISION=${revision}\n`,
+    `POSTGRES_PASSWORD=build-only\nPOSTGRES_MIGRATE_PASSWORD=build-only\nPOSTGRES_APP_PASSWORD=build-only\nREDIS_PASSWORD=build-only\nAGENTOS_IMAGE_TAG=${TEST_IMAGE_TAG}\nGIT_REVISION=${revision}\n`,
     { mode: 0o600 },
   );
   const build = (service: string) =>

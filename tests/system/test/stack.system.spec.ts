@@ -45,7 +45,7 @@ describe('startup respects dependency readiness', () => {
     expect(migrate).toMatchObject({ status: 'exited', exitCode: 0 }); // the one-shot succeeded
     expect(new Date(migrate.finishedAt).getTime()).toBeLessThanOrEqual(new Date(api.startedAt).getTime());
 
-    for (const service of ['postgres', 'redis', 'api', 'worker', 'web']) {
+    for (const service of ['postgres', 'redis', 'db-roles', 'api', 'worker', 'web']) {
       expect(await stack.state(service), service).toMatchObject({
         status: 'running',
         health: 'healthy',
@@ -65,6 +65,70 @@ describe('startup respects dependency readiness', () => {
     }
     // The worker publishes nothing: it has no HTTP server.
     expect((await stack.compose(['ps', '--format', '{{.Ports}}', 'worker'])).stdout.trim()).toBe('');
+  });
+});
+
+describe('database roles are separated (least privilege)', () => {
+  /** Runs SQL inside the postgres container as the given role. The password is a throwaway value generated for this project. */
+  const sqlAs = (user: string, password: string, sql: string) =>
+    stack.exec('postgres', [
+      'env',
+      `PGPASSWORD=${password}`,
+      'psql',
+      '-h',
+      '127.0.0.1',
+      '-U',
+      user,
+      '-d',
+      'agentos',
+      '-tAc',
+      sql,
+    ]);
+
+  it('the API connects as its own non-superuser role, receives no migration or superuser credentials, and owns nothing', async () => {
+    const user = await stack.exec('api', [
+      'node',
+      '-e',
+      'console.log(new URL(process.env.DATABASE_URL).username)',
+    ]);
+    expect(user.stdout.trim()).toBe('agentos_api');
+    const names = await stack.exec('api', [
+      'node',
+      '-e',
+      'console.log(Object.keys(process.env).sort().join(","))',
+    ]);
+    expect(names.stdout).not.toContain('DATABASE_MIGRATE_URL');
+    expect(names.stdout).not.toContain('DATABASE_ADMIN_URL');
+    expect(names.stdout).not.toContain('POSTGRES_PASSWORD');
+
+    const asApi = await sqlAs(
+      'agentos_api',
+      stack.appPassword,
+      'SELECT rolsuper FROM pg_roles WHERE rolname = current_user',
+    );
+    expect(asApi.stdout.trim()).toBe('f');
+    const owned = await sqlAs(
+      'agentos_api',
+      stack.appPassword,
+      "SELECT count(*) FROM pg_class c JOIN pg_roles r ON r.oid = c.relowner WHERE r.rolname = 'agentos_api'",
+    );
+    expect(owned.stdout.trim()).toBe('0'); // it owns no table, so it cannot alter or drop one, nor disable a trigger
+  });
+
+  it('the API role cannot create schemas or tables, and the migration role is not a superuser either', async () => {
+    const createTable = await sqlAs('agentos_api', stack.appPassword, 'CREATE TABLE public.nope (i int)');
+    expect(createTable.code).not.toBe(0);
+    expect(createTable.stderr).toMatch(/permission denied/i);
+    const createSchema = await sqlAs('agentos_api', stack.appPassword, 'CREATE SCHEMA nope');
+    expect(createSchema.code).not.toBe(0);
+    expect(createSchema.stderr).toMatch(/permission denied/i);
+
+    const migrate = await sqlAs(
+      'agentos_migrate',
+      stack.migratePassword,
+      'SELECT rolsuper, rolcreaterole FROM pg_roles WHERE rolname = current_user',
+    );
+    expect(migrate.stdout.trim()).toBe('f|f');
   });
 });
 
@@ -144,7 +208,7 @@ describe('predictable shutdown, and data that survives it', () => {
     expect(stopped.code).toBe(0);
     expect(seconds).toBeLessThan(45); // nobody needed to be killed at the grace deadline
 
-    for (const service of ['web', 'api', 'worker', 'redis', 'postgres']) {
+    for (const service of ['web', 'api', 'worker', 'redis', 'db-roles', 'postgres']) {
       const state = await stack.state(service);
       expect({ service, status: state.status, exitCode: state.exitCode, oomKilled: state.oomKilled }).toEqual(
         {

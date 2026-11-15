@@ -139,21 +139,58 @@ export function checkEnvironment(root) {
       return undefined;
     }
   };
-  const db = url('DATABASE_URL');
-  if (db) {
-    const want = {
-      user: example.active.get('POSTGRES_USER'),
-      password: example.active.get('POSTGRES_PASSWORD'),
-      db: example.active.get('POSTGRES_DB'),
-      port: example.active.get('POSTGRES_PORT'),
-    };
-    if (decodeURIComponent(db.username) !== want.user)
-      problems.push('DATABASE_URL user differs from POSTGRES_USER');
-    if (decodeURIComponent(db.password) !== want.password)
-      problems.push('DATABASE_URL password differs from POSTGRES_PASSWORD');
-    if (db.pathname.slice(1) !== want.db) problems.push('DATABASE_URL database differs from POSTGRES_DB');
-    if (db.port !== want.port) problems.push('DATABASE_URL port differs from POSTGRES_PORT');
+  // Three roles, three credentials (ADR-0010): the API connects as `agentos_api`, the migration process as `agentos_migrate`,
+  // and only test tooling and the provisioning job use the superuser.
+  const expectRole = (name, user, passwordVariable) => {
+    const parsed = url(name);
+    if (!parsed) return;
+    if (decodeURIComponent(parsed.username) !== user) problems.push(`${name} user differs from ${user}`);
+    if (decodeURIComponent(parsed.password) !== example.active.get(passwordVariable))
+      problems.push(`${name} password differs from ${passwordVariable}`);
+    if (parsed.pathname.slice(1) !== example.active.get('POSTGRES_DB'))
+      problems.push(`${name} database differs from POSTGRES_DB`);
+    if (parsed.port !== example.active.get('POSTGRES_PORT'))
+      problems.push(`${name} port differs from POSTGRES_PORT`);
+  };
+  expectRole('DATABASE_URL', 'agentos_api', 'POSTGRES_APP_PASSWORD');
+  expectRole('DATABASE_MIGRATE_URL', 'agentos_migrate', 'POSTGRES_MIGRATE_PASSWORD');
+  expectRole('DATABASE_ADMIN_URL', example.active.get('POSTGRES_USER'), 'POSTGRES_PASSWORD');
+  const rolePasswords = ['POSTGRES_PASSWORD', 'POSTGRES_MIGRATE_PASSWORD', 'POSTGRES_APP_PASSWORD'].map(
+    (name) => example.active.get(name),
+  );
+  if (new Set(rolePasswords).size !== rolePasswords.length)
+    problems.push(
+      'POSTGRES_PASSWORD, POSTGRES_MIGRATE_PASSWORD and POSTGRES_APP_PASSWORD must be different values',
+    );
+
+  // Least privilege in Compose: the superuser password reaches only PostgreSQL itself and the provisioning job; the API gets its
+  // own role, the migration process the migration role, and neither ever receives the other's URL.
+  const services = compose.services ?? {};
+  for (const [name, service] of Object.entries(services)) {
+    if (['postgres', 'db-roles'].includes(name)) continue;
+    if (/\bPOSTGRES_PASSWORD\b/.test(JSON.stringify(service.environment ?? {})))
+      problems.push(
+        `docker-compose.yml: ${name} receives the PostgreSQL superuser password (only postgres and db-roles may)`,
+      );
   }
+  const apiDatabaseUrl = String(services.api?.environment?.DATABASE_URL ?? '');
+  if (!/^postgresql:\/\/agentos_api:\$\{POSTGRES_APP_PASSWORD[:}]/.test(apiDatabaseUrl))
+    problems.push('docker-compose.yml: the api must connect as agentos_api with POSTGRES_APP_PASSWORD');
+  if (services.api?.environment && 'DATABASE_MIGRATE_URL' in services.api.environment)
+    problems.push('docker-compose.yml: the api must not receive DATABASE_MIGRATE_URL');
+  const migrateUrl = String(services.migrate?.environment?.DATABASE_MIGRATE_URL ?? '');
+  if (!/^postgresql:\/\/agentos_migrate:\$\{POSTGRES_MIGRATE_PASSWORD[:}]/.test(migrateUrl))
+    problems.push(
+      'docker-compose.yml: migrate must connect as agentos_migrate with POSTGRES_MIGRATE_PASSWORD',
+    );
+  if (services.migrate?.environment && 'DATABASE_URL' in services.migrate.environment)
+    problems.push("docker-compose.yml: migrate must not receive the API's DATABASE_URL");
+  if (!services['db-roles'])
+    problems.push('docker-compose.yml: the db-roles service (role provisioning) is missing');
+  else if (!services.migrate?.depends_on?.['db-roles'])
+    problems.push(
+      'docker-compose.yml: migrate must wait for db-roles (the roles must exist before migrations run)',
+    );
   const redis = url('REDIS_URL');
   if (redis) {
     if (decodeURIComponent(redis.password) !== example.active.get('REDIS_PASSWORD'))
@@ -163,7 +200,12 @@ export function checkEnvironment(root) {
   }
 
   // 4. Secrets: .env.example holds placeholders only.
-  for (const name of ['POSTGRES_PASSWORD', 'REDIS_PASSWORD']) {
+  for (const name of [
+    'POSTGRES_PASSWORD',
+    'POSTGRES_MIGRATE_PASSWORD',
+    'POSTGRES_APP_PASSWORD',
+    'REDIS_PASSWORD',
+  ]) {
     const value = example.active.get(name);
     if (value === undefined || !placeholder.test(value))
       problems.push(`.env.example: ${name} must be a "change-me-..." placeholder, never a real credential`);
