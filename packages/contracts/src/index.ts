@@ -3,5 +3,7 @@ export * from './audit';
 export * from './health';
 export * from './identity';
 export * from './jobs';
+export * from './organizations';
 export * from './pagination';
+export * from './permissions';
 export * from './primitives';
