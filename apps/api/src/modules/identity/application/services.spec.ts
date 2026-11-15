@@ -1,4 +1,5 @@
 import { Logger } from '@nestjs/common';
+import { AppError } from '../../../common/app-error';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuditRecorder } from '../../audit';
 import type { TransactionRunner } from '../../database';
@@ -479,6 +480,94 @@ describe('changing the password', () => {
       account.changePassword(auth, 'old password 12345', 'brand new password 99'),
     ).rejects.toMatchObject({
       kind: 'rate_limited',
+    });
+  });
+
+  describe('a failed password change is audited (auth.password_change_failed)', () => {
+    const WRONG = 'not the password 1';
+    const NEW = 'brand new password 99';
+    const failedEvents = (audit: FakeAudit) =>
+      audit.events.filter((e) => e.action === 'auth.password_change_failed');
+
+    it('records a wrong current password with its reason, the user, and nothing secret', async () => {
+      const { account, audit, auth, users, sessionsRepo } = await twoSessions();
+      await expect(account.changePassword(auth, WRONG, NEW)).rejects.toMatchObject({
+        kind: 'unprocessable',
+        code: 'invalid_current_password',
+      });
+      expect(failedEvents(audit)).toEqual([
+        expect.objectContaining({
+          action: 'auth.password_change_failed',
+          result: 'failure',
+          actorUserId: auth.user.id,
+          resourceType: 'user',
+          resourceId: auth.user.id,
+          metadata: { reason: 'wrong_current_password' },
+        }),
+      ]);
+      const recorded = JSON.stringify(audit.events);
+      for (const secret of [WRONG, NEW, 'old password 12345', 'hash('])
+        expect(recorded).not.toContain(secret);
+      // A failed attempt changes nothing else: the password and every session are untouched.
+      expect(users.hashes.get(auth.user.id)).toBe('hash(old password 12345)');
+      expect(sessionsRepo.sessions.every((s) => s.revokedAt === null)).toBe(true);
+    });
+
+    it('records the rate-limit exhaustion ONCE, on the failure that used the budget up, and not the refusals after it', async () => {
+      const { account, audit, auth } = await twoSessions();
+      const max = THROTTLE_RULES['password-account'].max;
+      for (let i = 0; i < max; i++)
+        await expect(account.changePassword(auth, `${WRONG} ${i}`, NEW)).rejects.toMatchObject({
+          code: 'invalid_current_password',
+        });
+      expect(failedEvents(audit).map((e) => e.metadata)).toEqual([
+        ...Array.from({ length: max }, () => ({ reason: 'wrong_current_password' })),
+        { reason: 'rate_limited' },
+      ]);
+
+      // From now on the attempt is refused with 429 BEFORE anything is verified, and adds no further audit volume.
+      const total = audit.events.length;
+      for (let i = 0; i < 3; i++)
+        await expect(account.changePassword(auth, WRONG, NEW)).rejects.toMatchObject({
+          kind: 'rate_limited',
+        });
+      expect(audit.events.length).toBe(total);
+    });
+
+    it('never changes the response when the audit store fails: still 422 for a wrong password, still 429 once limited', async () => {
+      const { account, audit, auth } = await twoSessions();
+      audit.failWith = new Error('audit store unavailable');
+      const max = THROTTLE_RULES['password-account'].max;
+      for (let i = 0; i < max; i++)
+        await expect(account.changePassword(auth, `${WRONG} ${i}`, NEW)).rejects.toMatchObject({
+          kind: 'unprocessable',
+          code: 'invalid_current_password',
+        }); // including the failure that exhausts the budget
+      await expect(account.changePassword(auth, WRONG, NEW)).rejects.toMatchObject({ kind: 'rate_limited' });
+      expect(failedEvents(audit)).toEqual([]); // nothing could be written, and nothing leaked into the response
+    });
+
+    it('still records the attempt when the limiter is unavailable, and the caller still gets the fail-closed 503', async () => {
+      const { account, audit, auth, throttle } = await twoSessions();
+      vi.spyOn(throttle, 'hit').mockRejectedValue(
+        new AppError(
+          'unavailable',
+          'authentication_unavailable',
+          'Authentication is temporarily unavailable',
+        ),
+      );
+      await expect(account.changePassword(auth, WRONG, NEW)).rejects.toMatchObject({
+        kind: 'unavailable',
+        code: 'authentication_unavailable',
+      });
+      expect(failedEvents(audit).map((e) => e.metadata)).toEqual([{ reason: 'wrong_current_password' }]);
+    });
+
+    it('does not record a successful change as a failure, nor a failure when the password was right', async () => {
+      const { account, audit, auth } = await twoSessions();
+      await account.changePassword(auth, 'old password 12345', NEW);
+      expect(failedEvents(audit)).toEqual([]);
+      expect(audit.actions()).toContain('auth.password_changed');
     });
   });
 });

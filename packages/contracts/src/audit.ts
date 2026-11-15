@@ -73,6 +73,16 @@ export const auditEventSchema = z.discriminatedUnion('action', [
     metadata: z.object({ revokedOtherSessions: z.number().int().min(0) }).strict(),
     ...common,
   }),
+  z.object({
+    // A signed-in caller who could not prove the CURRENT password (for example someone holding a stolen session). Written like a failed
+    // sign-in: in its own short transaction, never replacing the response. `rate_limited` is written once, by the failure that used the
+    // attempt budget up; refusals after that are not recorded again. No password, hash or token is ever part of it.
+    action: z.literal('auth.password_change_failed'),
+    resourceType: z.literal('user'),
+    result: failure,
+    metadata: z.object({ reason: z.enum(['wrong_current_password', 'rate_limited']) }).strict(),
+    ...common,
+  }),
 ]);
 
 /** What a caller passes to `AuditRecorder.record` (defaults not yet applied). */

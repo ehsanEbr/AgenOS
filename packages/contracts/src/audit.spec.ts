@@ -13,6 +13,7 @@ describe('audit event contracts', () => {
       'auth.logout',
       'auth.logout_all',
       'auth.password_changed',
+      'auth.password_change_failed',
     ]);
   });
 
@@ -50,5 +51,22 @@ describe('audit event contracts', () => {
         metadata: {},
       }).success,
     ).toBe(false);
+  });
+
+  it('describes a failed password change by its reason only, and nothing else can ride along', () => {
+    const attempt = (metadata: Record<string, unknown>, result = 'failure') =>
+      auditEventSchema.safeParse({
+        action: 'auth.password_change_failed',
+        resourceType: 'user',
+        result,
+        metadata,
+      }).success;
+    expect(attempt({ reason: 'wrong_current_password' })).toBe(true);
+    expect(attempt({ reason: 'rate_limited' })).toBe(true);
+    expect(attempt({ reason: 'because I said so' })).toBe(false);
+    expect(attempt({})).toBe(false);
+    expect(attempt({ reason: 'wrong_current_password', currentPassword: 'hunter2' })).toBe(false);
+    expect(attempt({ reason: 'wrong_current_password', newPassword: 'hunter3' })).toBe(false);
+    expect(attempt({ reason: 'rate_limited' }, 'success')).toBe(false); // a failed attempt cannot be recorded as a success
   });
 });

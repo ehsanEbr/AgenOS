@@ -55,10 +55,7 @@ export class AccountService {
     const storedHash = await this.users.findPasswordHash(userId);
     if (!storedHash) throw invalidCredentials(); // an active session without a credential cannot happen; never act on it
     const verification = await this.hasher.verify(currentPassword, storedHash);
-    if (!verification.valid) {
-      await this.throttle.hit('password-account', userId);
-      throw invalidCurrentPassword();
-    }
+    if (!verification.valid) throw await this.failedAttempt(userId);
 
     const newHash = await this.hasher.hash(newPassword); // hashing stays outside the transaction
     const token = generateSessionToken();
@@ -91,5 +88,53 @@ export class AccountService {
       );
     });
     return { session, token };
+  }
+
+  /**
+   * Counts a failed "current password" check, records it, and returns the error to throw.
+   *
+   * The audit record follows the failed sign-in convention: its own short transaction (there is no change to commit it with), and a
+   * failure to write it is logged without changing the response. `exhausted` is true for exactly the failure that used the budget up,
+   * so "rate limit reached" is recorded once per window; the 429 that follows is not recorded again. Nothing secret is in the event.
+   * If the limiter itself is unavailable the attempt is still recorded and the caller still gets the fail-closed 503.
+   */
+  private async failedAttempt(userId: string): Promise<unknown> {
+    let exhausted = false;
+    let limiterFailure: unknown;
+    try {
+      exhausted = (await this.throttle.hit('password-account', userId)).exhausted;
+    } catch (error) {
+      limiterFailure = error;
+    }
+
+    try {
+      await this.transactions.run(async (tx) => {
+        const common = {
+          resourceType: 'user' as const,
+          result: 'failure' as const,
+          actorUserId: userId,
+          resourceId: userId,
+        };
+        await this.audit.record(
+          {
+            action: 'auth.password_change_failed',
+            ...common,
+            metadata: { reason: 'wrong_current_password' },
+          },
+          tx,
+        );
+        if (exhausted)
+          await this.audit.record(
+            { action: 'auth.password_change_failed', ...common, metadata: { reason: 'rate_limited' } },
+            tx,
+          );
+      });
+    } catch (error) {
+      this.logger.error(
+        `Could not record a failed password change in the audit trail (${error instanceof Error ? error.name : 'error'})`,
+      );
+    }
+
+    return limiterFailure ?? invalidCurrentPassword();
   }
 }
