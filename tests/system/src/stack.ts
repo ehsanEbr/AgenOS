@@ -535,7 +535,7 @@ export async function buildImages(): Promise<ImageRecord[]> {
   // Images are built without secrets; the placeholder passwords only satisfy Compose's "required variable" checks.
   writeFileSync(
     envFile,
-    `POSTGRES_PASSWORD=build-only\nREDIS_PASSWORD=build-only\nAGENTOS_IMAGE_TAG=${TEST_IMAGE_TAG}\nGIT_REVISION=${revision}\n`,
+    `POSTGRES_PASSWORD=build-only\nPOSTGRES_MIGRATE_PASSWORD=build-only\nPOSTGRES_APP_PASSWORD=build-only\nREDIS_PASSWORD=build-only\nAGENTOS_IMAGE_TAG=${TEST_IMAGE_TAG}\nGIT_REVISION=${revision}\n`,
     { mode: 0o600 },
   );
   const build = (service: string) =>
