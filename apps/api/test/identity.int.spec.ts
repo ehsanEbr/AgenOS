@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, scryptSync } from 'node:crypto';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { PrismaClient } from '@prisma/client';
@@ -12,6 +12,7 @@ import { configureApp } from '../src/bootstrap/configure-app';
 import { AUDIT_REPOSITORY } from '../src/modules/audit/application/audit-repository';
 import { APP_CONFIG, type ApiConfig, loadApiConfig } from '../src/modules/config';
 import { THROTTLE } from '../src/modules/identity/application/ports';
+import { formatPasswordHash } from '../src/modules/identity/domain/password-hash';
 import { THROTTLE_RULES } from '../src/modules/identity/domain/throttle-policy';
 import { RedisThrottle } from '../src/modules/identity/infrastructure/redis-throttle';
 import { RedisService } from '../src/modules/redis';
@@ -669,6 +670,340 @@ describe('when Redis is unavailable', () => {
     } finally {
       await withoutRedis.close();
     }
+  });
+});
+
+const CODE = (...points: number[]) => points.map((point) => String.fromCodePoint(point)).join('');
+
+describe('the audit append is atomic with every session change (C1)', () => {
+  let normal: INestApplication; // the audit store works
+  let failing: INestApplication; // the audit append always fails: the change it should have recorded must not survive
+  beforeAll(async () => {
+    normal = await createApp({ allowRegistration: true });
+    failing = await createApp({ allowRegistration: true, failingAudit: true });
+  });
+  afterAll(async () => {
+    await Promise.all([normal?.close(), failing?.close()]);
+  });
+
+  /** A user with two live bearer sessions, plus a way to see everything those operations could have changed. */
+  async function seed() {
+    const email = emailOf('atomic');
+    expect((await register(normal, email)).status).toBe(201);
+    const tokenA = await loginToken(normal, email);
+    const tokenB = await loginToken(normal, email);
+    const user = await owner.user.findUniqueOrThrow({ where: { email } });
+    const snapshot = async () => ({
+      // Everything a session operation can change: which sessions exist, their tokens and whether they are revoked.
+      sessions: (
+        await owner.session.findMany({ where: { userId: user.id }, orderBy: { createdAt: 'asc' } })
+      ).map((row) => ({
+        id: row.id,
+        tokenHash: row.tokenHash,
+        revokedAt: row.revokedAt,
+        createdAt: row.createdAt,
+        absoluteExpiresAt: row.absoluteExpiresAt,
+      })),
+      passwordHash: (await owner.credential.findUniqueOrThrow({ where: { userId: user.id } })).passwordHash,
+      auditRows: await owner.auditLog.count({ where: { actorUserId: user.id } }),
+    });
+    return { email, user, tokenA, tokenB, snapshot };
+  }
+
+  const internalError = (response: { status: number; body: unknown }) => {
+    expect(response.status).toBe(500);
+    expect(apiErrorSchema.parse(response.body).code).toBe('internal_error');
+    expect(JSON.stringify(response.body)).not.toMatch(/audit|unavailable|store/i); // nothing about the cause leaks
+  };
+
+  it('password change: 500, the password is not changed, no session is revoked or rotated, existing tokens still work', async () => {
+    const { email, tokenA, tokenB, snapshot } = await seed();
+    const before = await snapshot();
+    const NEW_PASSWORD = 'must never become the password';
+    SECRETS.push(NEW_PASSWORD);
+
+    internalError(
+      await client(failing).post(
+        '/me/password',
+        { currentPassword: PASSWORD, newPassword: NEW_PASSWORD },
+        bearer(tokenA),
+      ),
+    );
+
+    expect(await snapshot()).toEqual(before); // hash, tokens, revocations and audit rows: all exactly as before
+    await client(failing).get('/me', bearer(tokenA)).expect(200); // not rotated, not revoked
+    await client(failing).get('/me', bearer(tokenB)).expect(200); // the other session was not revoked
+    await client(normal).post('/auth/login', { email, password: PASSWORD }).expect(200); // the old password still works
+    await client(normal).post('/auth/login', { email, password: NEW_PASSWORD }).expect(401); // and the new one never took effect
+  });
+
+  it('logout-all: 500 and not one session is revoked', async () => {
+    const { tokenA, tokenB, snapshot } = await seed();
+    const before = await snapshot();
+
+    internalError(await client(failing).post('/auth/logout-all', undefined, bearer(tokenA)));
+
+    expect(await snapshot()).toEqual(before);
+    expect(before.sessions.every((session) => session.revokedAt === null)).toBe(true);
+    await client(failing).get('/me', bearer(tokenA)).expect(200);
+    await client(failing).get('/me', bearer(tokenB)).expect(200);
+  });
+
+  it('logout: 500 and the session stays valid', async () => {
+    const { tokenA, tokenB, snapshot } = await seed();
+    const before = await snapshot();
+
+    internalError(await client(failing).post('/auth/logout', undefined, bearer(tokenA)));
+
+    expect(await snapshot()).toEqual(before);
+    await client(failing).get('/me', bearer(tokenA)).expect(200); // still signed in
+    await client(failing).get('/me', bearer(tokenB)).expect(200);
+  });
+
+  it('sign-in: 500, no session is created, no cookie is set, no token is returned', async () => {
+    const { email, snapshot } = await seed();
+    const before = await snapshot();
+
+    const cookieAttempt = await client(failing).post(
+      '/auth/login',
+      { email, password: PASSWORD },
+      { Origin: WEB },
+    );
+    internalError(cookieAttempt);
+    expect(cookieOf(cookieAttempt)).toBeUndefined();
+    const tokenAttempt = await client(failing).post('/auth/login', {
+      email,
+      password: PASSWORD,
+      delivery: 'token',
+    });
+    internalError(tokenAttempt);
+    expect(tokenAttempt.body.token).toBeUndefined();
+
+    const after = await snapshot();
+    expect(after.sessions).toHaveLength(before.sessions.length); // no session row survived the failed sign-ins
+    expect(after).toEqual(before);
+  });
+
+  it('sign-in that would also upgrade a weaker stored hash: the upgrade is rolled back with everything else', async () => {
+    const { email, user, snapshot } = await seed();
+    // A hash made the way an earlier, cheaper policy would have made it (N = 2^14).
+    const salt = randomBytes(16);
+    const key = scryptSync(Buffer.from(PASSWORD, 'utf8'), salt, 32, { N: 2 ** 14, r: 8, p: 1 });
+    const legacy = formatPasswordHash({
+      version: 1,
+      costLog2: 14,
+      blockSize: 8,
+      parallelization: 1,
+      keyLength: 32,
+      salt,
+      hash: key,
+    });
+    await owner.credential.update({ where: { userId: user.id }, data: { passwordHash: legacy } });
+    const before = await snapshot();
+    expect(before.passwordHash).toBe(legacy);
+
+    internalError(
+      await client(failing).post('/auth/login', { email, password: PASSWORD, delivery: 'token' }),
+    );
+    expect(await snapshot()).toEqual(before);
+    expect((await snapshot()).passwordHash).toBe(legacy); // still the weaker hash: the upgrade did not survive
+
+    // The same sign-in with a working audit store succeeds AND upgrades, which proves the setup above was really exercising the upgrade.
+    await client(normal).post('/auth/login', { email, password: PASSWORD, delivery: 'token' }).expect(200);
+    const upgraded = (await snapshot()).passwordHash;
+    expect(upgraded).not.toBe(legacy);
+    expect(upgraded).toMatch(/^\$scrypt\$v=1\$ln=17,r=8,p=1,len=32\$/);
+  });
+
+  it('a REFUSED sign-in is the one place where the audit is best-effort: the response is unchanged', async () => {
+    const { email } = await seed();
+    const refused = await client(failing).post('/auth/login', {
+      email,
+      password: 'definitely the wrong one',
+    });
+    expect(refused.status).toBe(401);
+    expect(apiErrorSchema.parse(refused.body).code).toBe('invalid_credentials');
+  });
+});
+
+describe('email identity: spellings, concurrency and the shared failure budget (C2)', () => {
+  let app: INestApplication;
+  beforeAll(async () => {
+    app = await createApp({ allowRegistration: true });
+  });
+  afterAll(async () => {
+    await app?.close();
+  });
+
+  /** The same address written six ways: upper case, padding, a tab and a line feed, NBSP and an ideographic space, a capital first letter. */
+  const spellingsOf = (email: string) => [
+    email,
+    email.toUpperCase(),
+    `  ${email}  `,
+    `${CODE(0x9)}${email}${CODE(0xa)}`,
+    `${CODE(0xa0)}${email}${CODE(0x3000)}`,
+    `${email[0]?.toUpperCase()}${email.slice(1)}`,
+  ];
+
+  it('registering one address concurrently in six spellings creates exactly one account: one success, five email_taken, one row', async () => {
+    const email = emailOf('race');
+    const responses = await Promise.all(spellingsOf(email).map((spelling) => register(app, spelling)));
+
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 409, 409, 409, 409, 409]);
+    for (const conflict of responses.filter((response) => response.status === 409))
+      expect(apiErrorSchema.parse(conflict.body).code).toBe('email_taken');
+    const winner = responses.find((response) => response.status === 201);
+    expect(winner?.body.user.email).toBe(email); // the stored and returned form is the canonical one
+
+    // Exactly one database row, in any spelling, and everything that belongs to it exists once.
+    expect(await owner.user.count({ where: { email } })).toBe(1);
+    expect(await owner.user.count({ where: { email: { equals: email, mode: 'insensitive' } } })).toBe(1);
+    const user = await owner.user.findUniqueOrThrow({ where: { email } });
+    expect(await owner.credential.count({ where: { userId: user.id } })).toBe(1);
+    expect(await owner.auditLog.count({ where: { action: 'auth.registered', resourceId: user.id } })).toBe(1);
+  });
+
+  it('sign-in works with every equivalent spelling of an existing address and always reports the canonical one', async () => {
+    const email = emailOf('spelling');
+    await register(app, email);
+    const responses = await Promise.all(
+      spellingsOf(email).map((spelling) =>
+        client(app).post('/auth/login', { email: spelling, password: PASSWORD, delivery: 'token' }),
+      ),
+    );
+    expect(responses.map((response) => response.status)).toEqual([200, 200, 200, 200, 200, 200]);
+    for (const response of responses) {
+      const parsed = loginResponseSchema.parse(response.body);
+      expect(parsed.user.email).toBe(email);
+      SECRETS.push(parsed.token as string);
+    }
+    // Six spellings, one account, six sessions of that one account.
+    const user = await owner.user.findUniqueOrThrow({ where: { email } });
+    expect(await owner.session.count({ where: { userId: user.id } })).toBe(6);
+  });
+
+  it('shares ONE failure budget across equivalent spellings: it is exhausted by the tenth failure whichever spelling was used', async () => {
+    const email = emailOf('budget');
+    const other = emailOf('budget-other');
+    await register(app, email);
+    await register(app, other);
+    const spellings = spellingsOf(email);
+    const max = THROTTLE_RULES['signin-account'].max;
+
+    for (let i = 0; i < max; i++) {
+      const spelling = spellings[i % spellings.length] as string;
+      expect(
+        (await client(app).post('/auth/login', { email: spelling, password: `wrong ${i} password xx` }))
+          .status,
+      ).toBe(401);
+    }
+    // The budget is gone for EVERY spelling, even for the right password: a different spelling is not a second chance.
+    for (const spelling of spellings) {
+      const blocked = await client(app).post('/auth/login', { email: spelling, password: PASSWORD });
+      expect(blocked.status, JSON.stringify(spelling)).toBe(429);
+      expect(apiErrorSchema.parse(blocked.body).code).toBe('too_many_attempts');
+      expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0);
+    }
+    // Recorded once, for that account, as the account budget; and another account is untouched.
+    const user = await owner.user.findUniqueOrThrow({ where: { email } });
+    const throttled = await owner.auditLog.findMany({
+      where: { action: 'auth.login_throttled', resourceId: user.id },
+    });
+    expect(throttled.map((row) => row.metadata)).toEqual([{ scope: 'account' }]);
+    await client(app).post('/auth/login', { email: other, password: PASSWORD }).expect(200);
+  });
+
+  it('does not accept an address that only differs by something the application cannot canonicalize (non-ASCII stays a validation error)', async () => {
+    const response = await register(app, `${CODE(0x130)}stanbul-${uid()}@example.com`);
+    expect(response.status).toBe(400);
+    expect(await owner.user.count({ where: { email: { contains: 'stanbul-' } } })).toBe(0);
+  });
+});
+
+describe('a failed password change is audited (C6, real PostgreSQL and Redis)', () => {
+  let normal: INestApplication;
+  let failing: INestApplication;
+  beforeAll(async () => {
+    normal = await createApp({ allowRegistration: true });
+    failing = await createApp({ allowRegistration: true, failingAudit: true });
+  });
+  afterAll(async () => {
+    await Promise.all([normal?.close(), failing?.close()]);
+  });
+
+  async function signedInUser() {
+    const email = emailOf('pwfail');
+    await register(normal, email);
+    const token = await loginToken(normal, email);
+    const user = await owner.user.findUniqueOrThrow({ where: { email } });
+    const failures = () =>
+      owner.auditLog.findMany({
+        where: { action: 'auth.password_change_failed', actorUserId: user.id },
+        orderBy: { occurredAt: 'asc' },
+      });
+    return { email, token, user, failures };
+  }
+  const change = (app: INestApplication, token: string, currentPassword: string) =>
+    client(app).post(
+      '/me/password',
+      { currentPassword, newPassword: 'a brand new long password' },
+      bearer(token),
+    );
+
+  it('a wrong current password answers 422 and leaves one audit row with its reason, the user and a correlation id, and no secret', async () => {
+    const { token, user, failures } = await signedInUser();
+    const wrong = `wrong-current-${uid()}-password`;
+    SECRETS.push(wrong, 'a brand new long password');
+
+    const response = await change(normal, token, wrong);
+    expect(response.status).toBe(422);
+    expect(apiErrorSchema.parse(response.body).code).toBe('invalid_current_password');
+
+    const rows = await failures();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      result: 'failure',
+      resourceType: 'user',
+      resourceId: user.id,
+      metadata: { reason: 'wrong_current_password' },
+    });
+    expect(rows[0]?.correlationId).toBeTruthy();
+    expect(JSON.stringify(rows)).not.toContain(wrong);
+    await client(normal).get('/me', bearer(token)).expect(200); // the session was not touched
+  });
+
+  it('records the exhaustion of the password-change budget ONCE, answers 429 afterwards, and adds no further rows', async () => {
+    const { token, failures } = await signedInUser();
+    const max = THROTTLE_RULES['password-account'].max;
+    for (let i = 0; i < max; i++)
+      expect((await change(normal, token, `wrong ${i} current ${uid()}`)).status).toBe(422);
+
+    const rows = await failures();
+    expect(rows.map((row) => row.metadata)).toEqual([
+      ...Array.from({ length: max }, () => ({ reason: 'wrong_current_password' })),
+      { reason: 'rate_limited' },
+    ]);
+
+    for (let i = 0; i < 3; i++) {
+      const refused = await change(normal, token, PASSWORD); // even the RIGHT password is refused now
+      expect(refused.status).toBe(429);
+      expect(Number(refused.headers['retry-after'])).toBeGreaterThan(0);
+    }
+    expect(await failures()).toHaveLength(max + 1); // the refusals were not recorded
+  });
+
+  it('never changes a response when the audit store fails: 422 for a wrong password, 429 once the budget is used up', async () => {
+    const { token, failures } = await signedInUser();
+    const max = THROTTLE_RULES['password-account'].max;
+    for (let i = 0; i < max; i++) {
+      const response = await change(failing, token, `wrong ${i} current ${uid()}`);
+      expect(response.status, `attempt ${i + 1}`).toBe(422); // including the attempt that exhausts the budget
+      expect(apiErrorSchema.parse(response.body).code).toBe('invalid_current_password');
+    }
+    const refused = await change(failing, token, PASSWORD);
+    expect(refused.status).toBe(429);
+    expect(apiErrorSchema.parse(refused.body).code).toBe('too_many_attempts');
+    expect(await failures()).toHaveLength(0); // nothing could be written, and nothing about it reached the caller
   });
 });
 
