@@ -20,8 +20,22 @@ export function utf8ByteLength(value: string): number {
   return bytes;
 }
 
-/** Normalized (trimmed, lower-cased) so that one address is one account. An email is an identifier here, not verified proof. */
-export const emailSchema = z.string().trim().toLowerCase().pipe(z.email().max(254));
+/**
+ * THE canonical form of an email: surrounding whitespace removed (everything JavaScript's `trim()` strips, not just spaces: tab,
+ * line breaks, no-break space, the Unicode spaces, the byte order mark) and lower-cased. One address is one account, so every code
+ * path that reads or writes an email goes through this function: the request schema below and `UserDirectory`. There must be no
+ * second implementation. The database enforces the same invariant (`identity.user_email_canonical`), see the migration of that name.
+ */
+export function canonicalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+/**
+ * Canonicalized, then validated. `z.email()` only accepts printable ASCII (letters, digits and `_ ' + - .` in the local part, a hyphenated
+ * ASCII domain), so after canonicalization every accepted address is ASCII, lower-case and free of whitespace: exactly what the
+ * database constraint requires. An email is an identifier here, not verified proof.
+ */
+export const emailSchema = z.string().overwrite(canonicalizeEmail).pipe(z.email().max(254));
 
 export const displayNameSchema = z.string().trim().min(1).max(100);
 

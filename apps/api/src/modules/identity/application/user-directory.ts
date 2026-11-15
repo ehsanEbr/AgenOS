@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { canonicalizeEmail } from '@agentos/contracts';
 import type { UserStatus } from '../domain/user';
 import { USER_REPOSITORY, type UserRepository } from './ports';
 
@@ -23,7 +24,7 @@ export class UserDirectory {
   }
 
   async findByEmail(email: string): Promise<UserSummary | null> {
-    return summarize(await this.users.findByEmail(email.trim().toLowerCase()));
+    return summarize(await this.users.findByEmail(canonicalizeEmail(email)));
   }
 }
 

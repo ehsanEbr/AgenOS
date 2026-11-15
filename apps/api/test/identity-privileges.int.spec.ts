@@ -1,7 +1,10 @@
 import 'reflect-metadata';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { PrismaClient } from '@prisma/client';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { canonicalizeEmail, emailSchema } from '@agentos/contracts';
 import type { DatabaseClient } from '../src/modules/database';
 import { PrismaAuditRepository } from '../src/modules/audit/infrastructure/prisma-audit.repository';
 import { type IsolatedDatabase, adminDatabaseUrl, createIsolatedDatabase } from './support/isolated-database';
@@ -20,6 +23,7 @@ let db: IsolatedDatabase;
 let api: PrismaClient; // the application's login role
 let owner: PrismaClient; // the migration role: owns every table
 
+const uid = () => randomUUID().slice(0, 8);
 const run = (client: PrismaClient, sql: string) => client.$executeRawUnsafe(sql);
 const query = <T>(client: PrismaClient, sql: string) => client.$queryRawUnsafe<T[]>(sql);
 const denied = /permission denied/i;
@@ -230,5 +234,167 @@ describe('the audit trail is append-only', () => {
       await run(owner, 'ALTER TABLE security.audit_log ENABLE TRIGGER audit_log_no_update_delete');
     }
     await expect(run(owner, "UPDATE security.audit_log SET action = 'again'")).rejects.toThrow(appendOnly);
+  });
+});
+
+/*
+ * The canonical email is a property of the DATA, not only of the application (migration `identity_email_canonical_check`):
+ *   CHECK (email ~ '^[!-~]+$' AND email = lower(email COLLATE "C"))
+ * i.e. printable ASCII only (no space, no tab or other control character, nothing non-ASCII) and no upper case. These tests talk to
+ * PostgreSQL directly, with the real API role, and prove the constraint matches the application's `canonicalizeEmail` contract.
+ */
+
+const CODE = (...points: number[]) => points.map((point) => String.fromCodePoint(point)).join('');
+
+/** The SQLSTATE of a failed raw query, as Prisma reports it. */
+function sqlstateOf(error: unknown): string | undefined {
+  const meta = (error as { meta?: { code?: string } } | undefined)?.meta;
+  return meta?.code ?? (error as { code?: string } | undefined)?.code;
+}
+
+/** Inserts a user with exactly this email text (parameterized: the text is data, never SQL). */
+const insertUser = (client: PrismaClient, email: string) =>
+  client.$executeRaw`INSERT INTO identity."user" (id, email, display_name, updated_at) VALUES (${randomUUID()}::uuid, ${email}, 'Email Test', now())`;
+
+const attempt = async (client: PrismaClient, email: string) => {
+  try {
+    await insertUser(client, email);
+    return 'accepted' as const;
+  } catch (error) {
+    return sqlstateOf(error) ?? 'unknown error';
+  }
+};
+
+describe('the email is canonical in the database itself', () => {
+  const CHECK_VIOLATION = '23514';
+
+  // Each of these is NOT in canonical form, so the database must refuse it whatever wrote it (the API role included).
+  it.each([
+    ['upper case', 'Alice@Example.com'],
+    ['upper case in the domain only', 'alice@Example.com'],
+    ['a leading space', ' alice@example.com'],
+    ['a trailing space', 'alice@example.com '],
+    ['a leading tab', CODE(0x9) + 'alice@example.com'],
+    ['a trailing tab', 'alice@example.com' + CODE(0x9)],
+    ['a trailing line feed', 'alice@example.com' + CODE(0xa)],
+    ['a trailing carriage return', 'alice@example.com' + CODE(0xd)],
+    ['a vertical tab', CODE(0xb) + 'alice@example.com'],
+    ['a form feed', 'alice@example.com' + CODE(0xc)],
+    ['a no-break space (U+00A0)', CODE(0xa0) + 'alice@example.com'],
+    ['an em space (U+2003)', 'alice@example.com' + CODE(0x2003)],
+    ['an ideographic space (U+3000)', CODE(0x3000) + 'alice@example.com'],
+    ['a byte order mark (U+FEFF)', CODE(0xfeff) + 'alice@example.com'],
+    ['a line separator (U+2028)', 'alice@example.com' + CODE(0x2028)],
+    ['an inner space', 'ali ce@example.com'],
+    ['a control character (U+0001)', 'ali' + CODE(0x1) + 'ce@example.com'],
+    ['a DEL character (U+007F)', 'ali' + CODE(0x7f) + 'ce@example.com'],
+    ['a non-ASCII letter in lower case', CODE(0xe4) + '@example.com'],
+    ['a non-ASCII domain', 'alice@ex' + CODE(0xe4) + 'mple.com'],
+    ['a fullwidth letter', CODE(0xff41) + '@example.com'],
+    ['the Turkish dotted capital I', CODE(0x130) + 'stanbul@example.com'],
+    ['the empty string', ''],
+  ])('refuses %s with SQLSTATE 23514', async (_label, email) => {
+    expect(await attempt(api, email)).toBe(CHECK_VIOLATION);
+    expect(await attempt(owner, email)).toBe(CHECK_VIOLATION); // the table owner is bound by it too
+  });
+
+  it('accepts the canonical form, including every character the application allows in a local part or a domain', async () => {
+    for (const email of [
+      `plain-${randomUUID()}@example.com`,
+      `dots.and+plus_and-dash.${randomUUID()}@sub-domain.example.org`,
+      `o'brien-${randomUUID()}@example.com`, // the apostrophe is valid and is printable ASCII
+      `digits0123456789-${randomUUID()}@x1.co`,
+    ])
+      expect(await attempt(api, email), email).toBe('accepted');
+  });
+
+  it('matches the application contract: whatever canonicalizeEmail + emailSchema produce is accepted, its raw input is refused unless already canonical', async () => {
+    const spellings = [
+      '  Contract.One@Example.COM  ',
+      CODE(0x9) + 'contract.two@example.com' + CODE(0xa),
+      CODE(0xa0) + 'Contract.Three@Example.com' + CODE(0x3000),
+      CODE(0xfeff) + "O'Brien.Four@Example.Org" + CODE(0x2003),
+      'contract.five@example.com', // already canonical
+    ];
+    for (const raw of spellings) {
+      const canonical = emailSchema.parse(raw);
+      expect(canonical).toBe(canonicalizeEmail(raw));
+      const unique = canonical.replace('@', `.${randomUUID().slice(0, 8)}@`);
+      expect(await attempt(api, unique), `canonical form of ${JSON.stringify(raw)}`).toBe('accepted');
+      const rawUnique = raw.replace(/(@)/, `.${randomUUID().slice(0, 8)}$1`);
+      const alreadyCanonical = canonicalizeEmail(rawUnique) === rawUnique;
+      expect(await attempt(api, rawUnique), `raw ${JSON.stringify(rawUnique)}`).toBe(
+        alreadyCanonical ? 'accepted' : CHECK_VIOLATION,
+      );
+    }
+  });
+
+  it('also guards UPDATE, and refuses a case variant with the check violation before it could ever collide on the unique index', async () => {
+    const email = `update-${randomUUID()}@example.com`;
+    expect(await attempt(api, email)).toBe('accepted');
+    const update = api.$executeRaw`UPDATE identity."user" SET email = ${email.toUpperCase()} WHERE email = ${email}`;
+    await expect(update).rejects.toMatchObject({ meta: { code: CHECK_VIOLATION } });
+    expect(await attempt(api, email.toUpperCase())).toBe(CHECK_VIOLATION); // not 23505: the variant never gets that far
+    expect(await attempt(api, email)).toBe('23505'); // the exact duplicate IS a unique violation
+  });
+});
+
+describe('the email migration never rewrites existing data', () => {
+  const sqlFile = readFileSync(
+    resolve(__dirname, '../prisma/migrations/20261115130000_identity_email_canonical_check/migration.sql'),
+    'utf8',
+  );
+  const [guardSql, addConstraintSql] = sqlFile.split('-- == add the constraint ==') as [string, string];
+  // The guard is the `DO $$ ... $$;` statement; the comments before it are not part of the statement.
+  const guard = guardSql.slice(guardSql.indexOf('DO $$')).trim().replace(/;$/, '');
+  const addConstraint = addConstraintSql.trim().replace(/;$/, '');
+
+  it('stops with an actionable message, changes nothing, and succeeds once the rows were corrected by a person', async () => {
+    const database = await createIsolatedDatabase(adminDatabaseUrl(), { owner: 'agentos_migrate' });
+    await database.applyMigrations();
+    const mine = new PrismaClient({ datasourceUrl: database.urlFor('migrate') });
+    try {
+      // The state a database could be in BEFORE this migration: no constraint, a few rows that violate the invariant.
+      await run(mine, 'ALTER TABLE identity."user" DROP CONSTRAINT user_email_canonical');
+      const keep = [
+        `Legacy-${uid()}@Example.com`,
+        ` padded-${uid()}@example.com`,
+        `fine-${uid()}@example.com`,
+      ];
+      for (const email of keep) await insertUser(mine, email);
+      const before = await query<{ email: string }>(mine, 'SELECT email FROM identity."user" ORDER BY email');
+
+      const failure = (await run(mine, guard).catch((error: unknown) => error)) as Error;
+      expect(failure).toBeInstanceOf(Error);
+      const text = JSON.stringify(failure, Object.getOwnPropertyNames(failure)) + String(failure);
+      expect(text).toMatch(/identity\.user_email_canonical cannot be added/);
+      expect(text).toMatch(/2 user row\(s\)/); // the two violating rows, counted
+      expect(text).toMatch(/Nothing was changed/);
+      expect(text).toMatch(/migrate resolve --rolled-back 20261115130000_identity_email_canonical_check/);
+      expect(sqlstateOf(failure)).toBe('23514');
+      // No email text leaks into the migration error (it would end up in deployment logs).
+      expect(text).not.toContain('Legacy-');
+      expect(text).not.toContain('padded-');
+
+      // Nothing was rewritten, and the constraint was not added.
+      expect(await query(mine, 'SELECT email FROM identity."user" ORDER BY email')).toEqual(before);
+      const constraint = await query(
+        mine,
+        `SELECT 1 FROM pg_constraint WHERE conname = 'user_email_canonical'`,
+      );
+      expect(constraint).toHaveLength(0);
+
+      // A person decides what happens to those accounts; here they are removed. Then the same migration goes through.
+      await run(mine, `DELETE FROM identity."user" WHERE email <> lower(email) OR email <> btrim(email)`);
+      await expect(run(mine, guard)).resolves.not.toThrow();
+      await run(mine, addConstraint);
+      expect(await attempt(mine, `Again-${uid()}@Example.com`)).toBe('23514');
+      expect(await query<{ email: string }>(mine, 'SELECT email FROM identity."user"')).toEqual([
+        { email: keep[2] },
+      ]);
+    } finally {
+      await mine.$disconnect();
+      await database.drop();
+    }
   });
 });
