@@ -129,12 +129,13 @@ apps/api/
     ├── schema/                multi-file schema: every *.prisma file in this folder is part of the schema
     │   ├── base.prisma        generator + datasource ONLY (datasource: `DATABASE_MIGRATE_URL`, `schemas = [...]`)
     │   ├── identity.prisma    users, credentials, sessions        (PostgreSQL schema `identity`)
+    │   ├── organizations.prisma  organizations, memberships       (PostgreSQL schema `identity`, tables of the organizations module)
     │   └── audit.prisma       the audit trail                     (PostgreSQL schema `security`)
     └── migrations/            committed to git; applied as the migration role
 ```
 
 **Phase 1.2 defined no models; domains add theirs in their own phase.** Phase 2.1 added the first two (`identity.prisma`, `audit.prisma`)
-and the first migrations. Each domain gets one PostgreSQL schema (`@@schema("identity")`, declared in `base.prisma`), one `.prisma` file
+and the first migrations; Phase 2.2 added `organizations.prisma` (its tables share the `identity` PostgreSQL schema with Identity's, but each table belongs to exactly one module). Each domain gets one PostgreSQL schema (`@@schema("identity")`, declared in `base.prisma`), one `.prisma` file
 per module, and one migration history for the whole repository. Facts verified on Prisma 6.19.3: multi-schema needs no preview flag;
 the first migration emits `CREATE SCHEMA IF NOT EXISTS`; `_prisma_migrations` lives in `public`; a foreign key may cross schemas; one
 generated client and one transaction span all schemas; a hand-written trigger or `GRANT` in a migration causes no drift; model names must

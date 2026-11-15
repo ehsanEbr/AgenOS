@@ -1,4 +1,4 @@
-# Backend architecture and conventions (Phase 1.3, amended in Phase 2.1)
+# Backend architecture and conventions (Phase 1.3, amended in Phases 2.1 and 2.2)
 
 This is the rulebook for `apps/api`. Every future domain (Identity, Projects, Agent Runtime, Model Intelligence, MCP
 Gateway, Software Intelligence, Observability, Security) is built the way this document describes. Rules marked
@@ -24,7 +24,7 @@ apps/api/src/
 │   └── with-timeout.ts
 └── modules/
     ├── config/  database/  redis/  health/        infrastructure and operational modules
-    ├── audit/  identity/                         the first domain modules (Phase 2.1; see sections 11 and 12)
+    ├── audit/  identity/  organizations/         the first domain modules (Phases 2.1 and 2.2; see sections 11 to 13)
     └── <domain>/                   future domains, one folder each
 ```
 
@@ -444,14 +444,15 @@ await this.transactions.run(async (tx) => {
 ## 12. Authentication and the caller (Phase 2.1)
 
 - **Every route is authenticated by default.** `AuthenticationGuard` is registered globally in `AppModule`; leaving a route open takes an
-  explicit `@Public()`. Health, registration and sign-in are the only public routes; `test/identity.e2e.spec.ts` pins that list.
+  explicit `@Public()`. Health, registration and sign-in are the only public routes; `test/identity.e2e.spec.ts` pins that list and
+  `test/route-metadata.e2e.spec.ts` pins how every other route is protected (section 13).
 - **One session model, two carriers.** A session is a row in `identity.session`; its token is 256 bits of randomness and only its SHA-256
   is stored. The token travels in an `HttpOnly`, `SameSite=Lax` cookie (browsers) or an `Authorization: Bearer` header (API clients);
   a request presenting both is refused. Cookie-authenticated state-changing requests must come from `WEB_ORIGIN` (CSRF defense).
   Sessions are validated against PostgreSQL only, never Redis.
 - **The caller** is a `Principal { userId, sessionId }`. Controllers receive it with `@CurrentPrincipal()` (or the whole `RequestAuth` with
-  `@CurrentAuth()`); services take it as an argument. No organization, role or permission is in the session: authorization (a later
-  step) is evaluated from the database on every request.
+  `@CurrentAuth()`); services take it as an argument. No organization, role or permission is in the session: authorization
+  (section 13) is evaluated from the database on every request.
 - **Rate limiting fails closed.** Sign-in, registration and password change count attempts in Redis; if Redis cannot answer, they answer
   `503 authentication_unavailable` instead of allowing unlimited attempts. `AppError({ retryAfterSeconds })` is sent as `Retry-After`.
 - **Passwords** are hashed with scrypt (`modules/identity/domain/password-policy.ts`: N=2^17, r=8, p=1, 32-byte key, 16-byte salt,
@@ -466,3 +467,37 @@ await this.transactions.run(async (tx) => {
 - **Failed attempts are audited, refusals are not.** A failed sign-in (existing accounts only) and a failed password change
   (`auth.password_change_failed`) are recorded in their own short transaction; the failure that exhausts a budget is recorded once, and the
   `429` responses after it are not recorded again. An audit failure is logged and never changes the response.
+
+## 13. Organizations, tenancy and authorization (Phase 2.2)
+
+`modules/organizations` owns `identity.organization` and `identity.membership` (the same PostgreSQL schema as Identity, never the same
+table). It depends on `identity` (the `Principal`, `UserDirectory`) and `audit`; nothing depends on it yet (`projects` will).
+
+- **A client-supplied organization id is only a selector.** `TenantAccess.resolve(principal, organizationId)` accepts it if, and only
+  if, the caller is a member, read from the database on that request; the result is a `TenantContext { organizationId, userId, role }`.
+  A stranger, a nonexistent organization and a malformed id all answer the same `404 organization_not_found`. A member who lacks the
+  permission gets `403 forbidden`. No role is cached anywhere: a demotion or removal applies to the next request.
+- **Routes declare their protection.** Every route under `/organizations/:organizationId/...` carries `@RequirePermission(key)` and the
+  controller `@UseGuards(OrganizationAccessGuard)`. The guard resolves the tenant, checks the permission and hands the handler a
+  `@CurrentTenant()`; a route under the guard that declares nothing is refused with a 500, never served. The routes that name no
+  organization (`GET`/`POST /organizations`, `/me`, `/auth/logout*`) are on an explicit allowlist. `test/route-metadata.e2e.spec.ts`
+  enumerates **every** route of the real application and fails if one is neither `@Public()`, nor permission-gated, nor on that list, so a
+  new route cannot slip in unclassified: add it to the test and the access decision is in the diff.
+- **Permissions and roles are code** (`packages/contracts/src/permissions.ts`): the catalog, the four organization roles and the matrix.
+  `AuthorizationService.authorize(tenant, ...permissions)` only evaluates the matrix. Domain rules stay in the domain
+  (`domain/membership-policy.ts`, pure functions with table tests): changing a membership needs `member.manage`, and also
+  `member.manage_owners` whenever an owner is involved; the last owner can never be removed or demoted.
+- **Repositories are fail-closed.** Every method that reads or writes data of an organization takes an `OrganizationScope` as its first
+  parameter (an opaque class, obtained only from `scopeOf(tenant)`) and calls `requireScope` before building any query; a missing, forged
+  or malformed scope throws before the database is touched. `repositories.spec.ts` proves that for every scoped method and fails if a
+  new one is not listed. The few methods keyed by a user (`find`, `listOrganizationsOf`, `organizationIdsOf`) are how a scope is earned.
+- **Membership changes are serialized per organization.** `MembershipService` opens one transaction per change and, first, locks the
+  organization's owner memberships (`SELECT ... FOR UPDATE`, then a fresh read of the owners); then it re-reads the actor's role,
+  applies the policy and writes the change and its audit events. Two concurrent demotions therefore cannot both see "another owner
+  exists". The race test (`organizations.int.spec.ts`) runs real concurrent requests and fails if the lock is removed.
+- **Audit.** Each change writes its events with `AuditRecorder.record(event, tx)` in the same transaction (an audit failure rolls the
+  change back; tested with a failing audit store): `organization.created`, `organization.updated` (field names only),
+  `membership.added|removed|role_changed`, and `organization.owner_granted|owner_revoked` in addition whenever ownership is involved.
+  Events of one transaction share `occurred_at` and have no defined order. A change that changes nothing writes nothing.
+- **Other modules** use `TenantAccess`, `AuthorizationService`, `MembershipDirectory` and the `TenantContext`/`OrganizationScope` types
+  from `modules/organizations/index.ts`; they never import its repositories or tables.
