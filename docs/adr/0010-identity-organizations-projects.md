@@ -1,6 +1,6 @@
 # ADR-0010: Identity, organizations and projects (first domain slice)
 
-**Status:** Proposed, revision 3 (final decisions of the architectural review recorded; awaiting the final review; no implementation has started)
+**Status:** Accepted (revision 3, approved at commit `16d1abe`; implementation proceeds in the steps of decision 10, each needing review and approval before the next)
 **Context:** The foundation (Phases 1.1-1.6) is merged: API, web app, worker, contracts, queue, Compose stack, system tests and CI.
 No domain entity exists yet. The specification ([§5.1, §5.2, §6.1, §6.2, §6.4, §7.3, §12.1, §12.2, §12.6, §18](../architecture/technical-architecture-specification.md))
 makes Identity, Organizations and Projects the first domain phase, and steps 1-2 of the MVP scenario (§19: "user creates an
