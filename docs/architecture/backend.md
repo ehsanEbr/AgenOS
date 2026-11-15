@@ -459,3 +459,10 @@ await this.transactions.run(async (tx) => {
   policy moves. The policy values are pinned by a unit test. Never log passwords, hashes, tokens or cookies; `packages/logger` redacts
   the common field names and the audit contract makes recording them impossible.
 - Unknown email, wrong password and disabled account give one identical `401 invalid_credentials`, after a real or dummy hash.
+- **Emails have one canonical form.** `canonicalizeEmail` in `packages/contracts` (trim every character JavaScript trims, then lower-case) is the
+  only implementation: the request schemas and `UserDirectory` both call it. The database enforces the same invariant
+  (`identity.user_email_canonical`: printable ASCII, no upper case), so a spelling variant cannot be stored next to the canonical address.
+  Anything that reads or writes an email goes through that function; do not write a second one.
+- **Failed attempts are audited, refusals are not.** A failed sign-in (existing accounts only) and a failed password change
+  (`auth.password_change_failed`) are recorded in their own short transaction; the failure that exhausts a budget is recorded once, and the
+  `429` responses after it are not recorded again. An audit failure is logged and never changes the response.

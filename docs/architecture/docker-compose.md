@@ -185,5 +185,15 @@ scanning, no registry publish and no production hardening; that belongs to a lat
 - Redis and PostgreSQL run without TLS inside the Docker network.
 - The PostgreSQL **superuser** password sits in the same `.env` as the others and in the `postgres` and `db-roles` containers. The API and the migration process do not receive it (`check-env` enforces this).
 - With `AUTH_ALLOW_REGISTRATION=true` anyone who can reach the API can register (see environment.md).
+- **Session cookies are not `Secure` here.** `WEB_ORIGIN` is `http://localhost:<WEB_PORT>`, so the cookie is sent over plain HTTP (the
+  API allows a plain-http origin only for localhost). That is true even though the containers run with `NODE_ENV=production`, which
+  here only means JSON logs. A real deployment uses an `https://` origin.
+- **Per-address rate limits can be bypassed on the published API port.** The stack sets `TRUST_PROXY_HOPS=1` because the web container's
+  nginx is one proxy, and the API is also published on `127.0.0.1:${API_PORT}`. A client that connects there directly can send its own
+  `X-Forwarded-For` and choose the address that per-address limits are counted against. Through the web container this is not
+  possible (nginx overwrites the header). Per-account limits are unaffected. In production the API port is not published; see
+  "Production requirements for authentication" in environment.md.
+- Authentication rate limiting has known limitations (per-account lockout, IPv6 rotation, a shared `unknown` bucket); they are listed in
+  environment.md and ADR-0010 and are not solved here.
 - The images contain dev dependencies and build tooling.
 - `CORS_ORIGINS` defaults to the Vite dev origin; the container stack uses same-origin proxying and needs no CORS.
