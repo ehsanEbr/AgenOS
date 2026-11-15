@@ -23,6 +23,11 @@ export class UserDirectory {
     return summarize(await this.users.findById(id));
   }
 
+  /** The users that exist among `ids` (unknown ids are simply absent), in no particular order. */
+  async findByIds(ids: readonly string[]): Promise<UserSummary[]> {
+    return (await this.users.findByIds(ids)).map((user) => summarize(user)!);
+  }
+
   async findByEmail(email: string): Promise<UserSummary | null> {
     return summarize(await this.users.findByEmail(canonicalizeEmail(email)));
   }

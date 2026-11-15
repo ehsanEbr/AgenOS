@@ -102,12 +102,21 @@ describe('authentication is the default', () => {
       'POST /auth/login',
       'POST /auth/register',
     ]);
-    // Everything else is authenticated by the global guard.
+    // Everything else is authenticated by the global guard. (What each organization route additionally requires is pinned, route by
+    // route, in route-metadata.e2e.spec.ts.)
     expect(protectedRoutes.sort()).toEqual([
+      'DELETE /organizations/:organizationId/members/:userId',
       'GET /me',
+      'GET /organizations',
+      'GET /organizations/:organizationId',
+      'GET /organizations/:organizationId/members',
+      'PATCH /organizations/:organizationId',
+      'PATCH /organizations/:organizationId/members/:userId',
       'POST /auth/logout',
       'POST /auth/logout-all',
       'POST /me/password',
+      'POST /organizations',
+      'POST /organizations/:organizationId/members',
     ]);
   });
 });

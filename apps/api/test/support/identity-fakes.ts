@@ -84,6 +84,9 @@ export class InMemoryUsers implements UserRepository {
   findById(id: string) {
     return Promise.resolve(this.users.find((u) => u.id === id) ?? null);
   }
+  findByIds(ids: readonly string[]) {
+    return Promise.resolve(this.users.filter((u) => ids.includes(u.id)));
+  }
   hasAnyUser() {
     return Promise.resolve(this.users.length > 0);
   }
