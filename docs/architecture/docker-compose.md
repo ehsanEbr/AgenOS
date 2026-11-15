@@ -61,6 +61,32 @@ migrate (one-shot) --> postgres
 - **Ports.** Everything published is bound to `127.0.0.1` only. The worker publishes nothing. Within the Docker network services
   talk to each other freely; that network is not exposed.
 
+## Database roles
+
+The superuser is not what the application runs as (ADR-0010, decision 6). Three roles exist:
+
+| Role              | Provisioned by       | Connects from                      | Privileges                                                          |
+| ----------------- | -------------------- | ---------------------------------- | ------------------------------------------------------------------- |
+| superuser         | the `postgres` image | `db-roles`, test tooling           | everything                                                          |
+| `agentos_migrate` | `db-roles`           | the `migrate` service, `pnpm db:*` | owner of the schemas and tables; not a superuser                    |
+| `agentos_api`     | `db-roles`           | the `api` service, `pnpm dev`      | member of `agentos_app`: only what migrations granted; owns nothing |
+
+**`db-roles`** runs `infrastructure/postgres/roles.sql` as the superuser on every start. It is idempotent, works on a new volume and
+on an existing one, re-applies the passwords from `.env`, and touches no data. It provisions, then stays idle and reports healthy
+(`docker compose up --wait` treats an exited container as a failure, and `depends_on: service_healthy` orders it). It starts with
+`pnpm infra:up` (host development) as well as `pnpm stack:up`; `migrate` waits for it, and the API waits for `migrate`.
+
+**Each migration grants on its own tables** to the group role `agentos_app` (a `NOLOGIN` role that a migration also creates if it
+does not exist). There is no runtime GRANT and no role-handling code in the application. The audit table is `INSERT`-only; see
+[backend.md](backend.md#database-roles-and-the-audit-trail).
+
+**Upgrading an existing checkout:** `pnpm setup:env` (adds the new variables to your `.env`, keeps your values), then `pnpm infra:up`
+(provisions the roles on your existing volume), then `pnpm db:deploy`. No volume is recreated and no data is deleted.
+
+**The superuser is still used for two things:** the PostgreSQL healthcheck and test tooling (`DATABASE_ADMIN_URL`, which creates
+throwaway databases). Neither is application code. A production deployment provisions the same roles with its own tooling and must
+never connect the application as a superuser or as the schema owner: that is the boundary the audit protection relies on.
+
 ## Shutdown
 
 `docker compose stop` sends SIGTERM and waits `stop_grace_period`, then SIGKILL. Every service handles SIGTERM and **exits 0**:
@@ -157,5 +183,7 @@ scanning, no registry publish and no production hardening; that belongs to a lat
 - Passwords are random but live in a plain `.env` file on your machine (git-ignored). Containers receive them as environment
   variables (visible in `docker inspect` to anyone who can run Docker on the machine).
 - Redis and PostgreSQL run without TLS inside the Docker network.
+- The PostgreSQL **superuser** password sits in the same `.env` as the others and in the `postgres` and `db-roles` containers. The API and the migration process do not receive it (`check-env` enforces this).
+- With `AUTH_ALLOW_REGISTRATION=true` anyone who can reach the API can register (see environment.md).
 - The images contain dev dependencies and build tooling.
 - `CORS_ORIGINS` defaults to the Vite dev origin; the container stack uses same-origin proxying and needs no CORS.

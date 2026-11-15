@@ -12,9 +12,9 @@ Node.js >= 22.12, pnpm 11 (`corepack enable` picks the pinned version), Docker w
 
 ```bash
 pnpm install
-pnpm setup:env      # creates .env with random local passwords; never overwrites an existing .env
-pnpm infra:up       # PostgreSQL + Redis, waits until healthy
-pnpm db:deploy      # applies Prisma migrations (none exist yet; safe to run)
+pnpm setup:env      # creates .env with random local passwords. On an existing .env it only ADDS missing variables; no value is changed
+pnpm infra:up       # PostgreSQL + Redis, provisions the database roles, waits until healthy
+pnpm db:deploy      # applies Prisma migrations as the migration role (identity and audit tables)
 pnpm dev            # builds the shared packages, then runs api, worker and web in watch mode
 ```
 
@@ -23,6 +23,22 @@ for `worker ready` in the output) and the web app (Vite, http://localhost:5173, 
 
 Run one application: `pnpm --filter @agentos/api dev`, `pnpm --filter @agentos/worker dev`, `pnpm --filter @agentos/web dev`
 (build the shared packages once with `pnpm --filter @agentos/contracts build`, or let Nx do it via `pnpm dev`).
+
+### Create the first user
+
+On an empty instance the first registration is always allowed; after that registration is closed (see
+[environment.md](environment.md#registration-is-closed-how-to-add-a-user)):
+
+```bash
+curl -s -X POST http://localhost:3000/api/v1/auth/register -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","displayName":"You","password":"a long password of 12+ chars"}'
+# an API client can ask for a bearer token instead of a cookie:
+curl -s -X POST http://localhost:3000/api/v1/auth/login -H 'content-type: application/json' \
+  -d '{"email":"you@example.com","password":"a long password of 12+ chars","delivery":"token"}'
+curl -s http://localhost:3000/api/v1/me -H "authorization: Bearer <token from the login response>"
+```
+
+Sign-in needs Redis (it rate-limits attempts and **fails closed** when Redis is down); an existing session keeps working without it.
 
 ### The full stack in containers
 
@@ -67,15 +83,18 @@ The worker logs `job completed` with the job id, type and correlation id.
 
 ## Troubleshooting
 
-| Symptom                                                                                     | Likely cause and fix                                                                                                                                                                                                                                                                                                              |
-| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| API exits with a message naming `DATABASE_URL`/`REDIS_URL`                                  | `.env` missing: run `pnpm setup:env`                                                                                                                                                                                                                                                                                              |
-| `password authentication failed` after editing `.env`                                       | PostgreSQL only applies the password when its volume is created; see [infrastructure.md](infrastructure.md)                                                                                                                                                                                                                       |
-| Worker container `Exited (2)`                                                               | Invalid worker configuration: `pnpm stack:logs` names the variable (never its value)                                                                                                                                                                                                                                              |
-| Worker container `unhealthy`                                                                | `docker inspect --format '{{json .State.Health}}' <container>`: the last probe line says why (not ready / Redis down / stale heartbeat)                                                                                                                                                                                           |
-| `stack:up` build fails on `apt-get` with 503                                                | A transient Debian mirror error; the Dockerfile retries 5 times, run it again                                                                                                                                                                                                                                                     |
-| Image build or pull fails with `DeadlineExceeded` / `i/o timeout` to `registry-1.docker.io` | **Your DNS is returning a wrong address for Docker Hub**, not a build problem (see "Docker Hub unreachable" below). Check `nslookup registry-1.docker.io` against `nslookup registry-1.docker.io 8.8.8.8`; retry when the answers agree. `SYSTEST_SKIP_BUILD=1` reuses images **built from this exact commit** (it verifies that) |
-| `ERR_PNPM_IGNORED_BUILDS` after adding a dependency                                         | Allow or deny its install script in `pnpm-workspace.yaml` (`allowBuilds`)                                                                                                                                                                                                                                                         |
+| Symptom                                                                                       | Likely cause and fix                                                                                                                                                                                                                                                                                                              |
+| --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API exits with a message naming `DATABASE_URL`/`REDIS_URL`                                    | `.env` missing: run `pnpm setup:env`                                                                                                                                                                                                                                                                                              |
+| `password authentication failed` after editing `.env`                                         | PostgreSQL only applies the password when its volume is created; see [infrastructure.md](infrastructure.md)                                                                                                                                                                                                                       |
+| Worker container `Exited (2)`                                                                 | Invalid worker configuration: `pnpm stack:logs` names the variable (never its value)                                                                                                                                                                                                                                              |
+| Worker container `unhealthy`                                                                  | `docker inspect --format '{{json .State.Health}}' <container>`: the last probe line says why (not ready / Redis down / stale heartbeat)                                                                                                                                                                                           |
+| `stack:up` build fails on `apt-get` with 503                                                  | A transient Debian mirror error; the Dockerfile retries 5 times, run it again                                                                                                                                                                                                                                                     |
+| Image build or pull fails with `DeadlineExceeded` / `i/o timeout` to `registry-1.docker.io`   | **Your DNS is returning a wrong address for Docker Hub**, not a build problem (see "Docker Hub unreachable" below). Check `nslookup registry-1.docker.io` against `nslookup registry-1.docker.io 8.8.8.8`; retry when the answers agree. `SYSTEST_SKIP_BUILD=1` reuses images **built from this exact commit** (it verifies that) |
+| `role "agentos_api" does not exist` / `password authentication failed for user "agentos_api"` | The database roles are not provisioned (or your `.env` predates them): run `pnpm setup:env` then `pnpm infra:up`; it provisions them on your existing volume without touching data                                                                                                                                                |
+| `permission denied for table/schema ...` from the API                                         | Working as designed: the API role holds only what migrations granted. A new table needs its `GRANT` in the same migration (see backend.md, "Database roles")                                                                                                                                                                      |
+| `DATABASE_ADMIN_URL is required` in an integration test                                       | `.env` predates it: `pnpm setup:env` adds it                                                                                                                                                                                                                                                                                      |
+| `ERR_PNPM_IGNORED_BUILDS` after adding a dependency                                           | Allow or deny its install script in `pnpm-workspace.yaml` (`allowBuilds`)                                                                                                                                                                                                                                                         |
 
 ## Testing
 
@@ -99,14 +118,15 @@ The worker logs `job completed` with the job id, type and correlation id.
   throwaway Compose project (`agentos-systest-<id>`: own volumes, network, random ports, generated credentials) and removes it
   at the end. They never touch your `agentos` project. They take several minutes. Files:
 
-  | File                           | What it verifies                                                                                                                                                                                                                                               |
-  | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `dependencies.system.spec.ts`  | API starts with no dependencies (alive, not ready, leaks nothing), becomes ready when they appear; losing and regaining PostgreSQL / Redis flips readiness and recovers with **no API restart**                                                                |
-  | `stack.system.spec.ts`         | Migrate before API; all healthy; loopback-only ports; web -> API proxy; a job processed by the worker container; worker has no DB credentials; **graceful shutdown, every exit code 0**; volumes and data survive `down`                                       |
-  | `worker.system.spec.ts`        | Healthy worker; Redis outage: not ready then recovered in the **same process, one connection**; crash -> Docker restart + job recovered; SIGTERM -> exit 0, **not restarted**; forced stop leaves the job unacknowledged and it is recovered                   |
-  | `worker-config.system.spec.ts` | Invalid configuration: exit 2, **exactly 5 restarts**, then stays down, names the variable, no credential                                                                                                                                                      |
-  | `guards.system.spec.ts`        | The harness's own protections: the isolation guard **aborts before creating anything** for each kind of leaked setting (ports, network, image tag, passwords) and prints no credential; ambient developer variables are neutralized; the image-provenance rule |
-  | `worker-stuck.system.spec.ts`  | A handler that ignores its abort signal, under the real supervisor: restarts are bounded and BullMQ fails the poison job                                                                                                                                       |
+  | File                           | What it verifies                                                                                                                                                                                                                                                                                                                   |
+  | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `dependencies.system.spec.ts`  | API starts with no dependencies (alive, not ready, leaks nothing), becomes ready when they appear; losing and regaining PostgreSQL / Redis flips readiness and recovers with **no API restart**                                                                                                                                    |
+  | `stack.system.spec.ts`         | Migrate before API; all healthy; loopback-only ports; web -> API proxy; a job processed by the worker container; worker has no DB credentials; **graceful shutdown, every exit code 0**; volumes and data survive `down`                                                                                                           |
+  | `worker.system.spec.ts`        | Healthy worker; Redis outage: not ready then recovered in the **same process, one connection**; crash -> Docker restart + job recovered; SIGTERM -> exit 0, **not restarted**; forced stop leaves the job unacknowledged and it is recovered                                                                                       |
+  | `worker-config.system.spec.ts` | Invalid configuration: exit 2, **exactly 5 restarts**, then stays down, names the variable, no credential                                                                                                                                                                                                                          |
+  | `guards.system.spec.ts`        | The harness's own protections: the isolation guard **aborts before creating anything** for each kind of leaked setting (ports, network, image tag, passwords) and prints no credential; ambient developer variables are neutralized; the image-provenance rule                                                                     |
+  | `identity.system.spec.ts`      | Authentication through the web proxy: tables owned by the migration role, the API role's exact privileges, bootstrap and closed registration, cookie sign-in and CSRF, **Redis lost: new sign-ins 503, existing sessions keep working**, the audit trail (the API role cannot read, change or empty it), per-account rate limiting |
+  | `worker-stuck.system.spec.ts`  | A handler that ignores its abort signal, under the real supervisor: restarts are bounded and BullMQ fails the poison job                                                                                                                                                                                                           |
 
 - **Do not use `docker kill`/`docker stop` to simulate a crash** in your own tests: Docker treats them as a manual stop and never
   applies the restart policy. Signal the process inside the container (`Stack.signalWorkerProcess`).

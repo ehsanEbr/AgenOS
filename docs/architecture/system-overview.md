@@ -14,15 +14,15 @@ flowchart LR
     web["<b>web</b><br/>React app<br/>served by nginx :8080<br/>(Vite in host dev)"]
     api["<b>api</b><br/>NestJS :3000<br/>modular monolith"]
     worker["<b>worker</b><br/>Node, no HTTP port<br/>BullMQ consumer"]
-    migrate["<b>migrate</b><br/>one-shot:<br/>prisma migrate deploy"]
+    migrate["<b>migrate</b><br/>one-shot:<br/>prisma migrate deploy<br/>(migration role)"]
     pg[("<b>PostgreSQL</b><br/>SOURCE OF TRUTH<br/>all persistent data")]
     redis[("<b>Redis</b><br/>BullMQ queue transport<br/>and ephemeral state only")]
   end
 
   user -- "HTTPS/HTTP" --> web
   web -- "/api/v1 (typed client,<br/>same origin)" --> api
-  api -- "Prisma" --> pg
-  migrate -- "applies migrations" --> pg
+  api -- "Prisma, as the API role<br/>(not a superuser, owns nothing)" --> pg
+  migrate -- "applies migrations,<br/>as the migration role" --> pg
   api -- "enqueue via @agentos/queue<br/>(no API code does this yet)" --> redis
   redis -- "jobs (at-least-once)" --> worker
   worker -. "no database access<br/>by design (ADR-0006)" .- pg
@@ -31,6 +31,8 @@ flowchart LR
 - **PostgreSQL is the source of truth.** Redis carries queue messages and ephemeral state; nothing that cannot be rebuilt from
   PostgreSQL may live only in Redis. A lost queue loses jobs, not data. (Closing the gap between "committed in PostgreSQL" and
   "enqueued in Redis" is the transactional outbox, a later phase.)
+- **Authentication is the default.** Every API route requires a session except health, registration and sign-in; sessions live in
+  PostgreSQL (Redis only counts rate-limit attempts, and sign-in fails closed without it). See [backend.md](backend.md#12-authentication-and-the-caller-phase-21).
 - **Separate processes:** `web`, `api`, `worker` and `migrate` are four independent executables; PostgreSQL and Redis are the two
   infrastructure services. The API and the worker never call each other: they meet only through Redis (and the shared contracts).
 - Today the only job is the diagnostic `system.ping`; the API does not enqueue anything yet. The producer side (`QueueProducer`) is

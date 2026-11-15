@@ -2,7 +2,7 @@
 
 AgentOS owns orchestration, intelligence, governance and the execution lifecycle. External LLM providers and agent
 frameworks are replaceable infrastructure behind adapters. Architecture: modular monolith + independent workers,
-TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation phases are complete through **1.6 System Integration & CI** (see README). Domain entities, domain jobs and the API enqueuing work are later phases. Rulebooks:
+TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation phases are complete through **1.6 System Integration & CI** (see README). Phase 2 (identity, organizations, projects; ADR-0010) is delivered step by step, each step reviewed before the next; **2.1 (authentication and sessions) is implemented**. Domain jobs and the API enqueuing work are later phases. Rulebooks:
 `docs/architecture/backend.md` (read before touching `apps/api`), `docs/architecture/frontend.md` (read before touching `apps/web`) `docs/architecture/workers.md` (read before touching `apps/worker`, `packages/queue` or job contracts) and `docs/architecture/docker-compose.md` (read before touching Docker, Compose or process lifecycle/health).
 
 ## Rules (from the architecture spec, section 20)
@@ -46,8 +46,9 @@ TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation
 - **Secrets**: never commit `.env`, never put real credentials in `.env.example`, never log connection strings or
   passwords (log error classes only), never return infrastructure details in API responses.
 - Lists: `paginationQuerySchema` / `paginatedSchema` / `sortQuerySchema` from contracts. Document endpoints with `ApiZodResponse` etc.
-- Prisma: one `.prisma` file per domain under `apps/api/prisma/schema/`; migrations are committed; applied migrations are
-  never edited; production uses `db:deploy` only.
+- Prisma: one `.prisma` file per module under `apps/api/prisma/schema/`, one PostgreSQL schema per domain (`@@schema`); migrations are committed; applied migrations are
+  never edited; production uses `db:deploy` only. The Prisma CLI runs as the **migration role** (`DATABASE_MIGRATE_URL`); the API runs as its own non-superuser role (`DATABASE_URL`) that owns nothing, so **every migration grants exactly what its tables need to `agentos_app`** (see backend.md, "Database roles").
+- Authentication is the default: every route needs a session unless it is explicitly `@Public()`. The caller is a `Principal` (`@CurrentPrincipal()`). Audit events go through `AuditRecorder.record(event, tx)` in the same transaction as the change; the audit table is append-only. Never log passwords, hashes, tokens or cookies.
 - Redis is cache / ephemeral state only. PostgreSQL is the source of truth.
 
 Web conventions (details in frontend.md):
@@ -66,7 +67,7 @@ Worker / job conventions (details in workers.md):
 
 System / infrastructure conventions (details in docker-compose.md, ci.md, environment.md):
 
-- Every environment variable is declared in the app's config schema, documented in `.env.example` and, if containers need it, passed by Compose; `pnpm check:env` (part of `check:architecture`) fails on drift. Only `api` and `migrate` get database credentials; the worker never does.
+- Every environment variable is declared in the app's config schema, documented in `.env.example` and, if containers need it, passed by Compose; `pnpm check:env` (part of `check:architecture`) fails on drift. Only `api` and `migrate` get database credentials (each its own non-superuser role, never the superuser's); the worker never does.
 - Services exit 0 on a clean shutdown. A worker that must be restarted exits non-zero and relies on the Compose restart policy (`on-failure:5`); **`docker stop`/`docker kill` are manual stops and never trigger it**, so signal the process inside the container when testing restarts.
 - System tests (`tests/system`) use throwaway Compose projects named `agentos-systest-<id>` and never touch the developer's `agentos` project; never add a code path that deletes volumes of any other project.
 - CI: one required status (`CI result`); every job calls a root script, so what CI runs is what you run. Do not add `continue-on-error`.
