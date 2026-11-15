@@ -40,7 +40,10 @@ const apiEnvObject = z.object({
    * instance is always allowed (bootstrap).
    */
   AUTH_ALLOW_REGISTRATION: booleanSchema.default(false),
-  /** Permits a non-HTTPS WEB_ORIGIN on a non-loopback host (cookies are then sent without `Secure`). Development only. */
+  /**
+   * Permits a non-HTTPS WEB_ORIGIN on a non-loopback host (cookies are then sent without `Secure`). Development only: the API refuses to
+   * start with this enabled when NODE_ENV=production.
+   */
   AUTH_ALLOW_INSECURE_ORIGIN: booleanSchema.default(false),
   /** A session ends after this many minutes without use. */
   SESSION_IDLE_TTL_MINUTES: z.coerce
@@ -74,6 +77,16 @@ export const apiEnvSchema = apiEnvObject.superRefine((env, ctx) => {
       path: ['WEB_ORIGIN'],
       message:
         'must use https, or point at localhost (set AUTH_ALLOW_INSECURE_ORIGIN=true to accept plain http on another host)',
+    });
+  }
+  // A development convenience must never reach production: with the flag, a plain-http origin on a real host is accepted and session
+  // cookies are sent without `Secure`. The process refuses to start rather than run that way.
+  if (env.NODE_ENV === 'production' && env.AUTH_ALLOW_INSECURE_ORIGIN) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['AUTH_ALLOW_INSECURE_ORIGIN'],
+      message:
+        'must not be enabled when NODE_ENV=production (it permits session cookies without the Secure flag)',
     });
   }
   if (env.SESSION_ABSOLUTE_TTL_HOURS * 60 < env.SESSION_IDLE_TTL_MINUTES) {

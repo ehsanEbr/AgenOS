@@ -111,3 +111,61 @@ describe('authentication settings', () => {
     ).toThrow(/SESSION_ABSOLUTE_TTL_HOURS/);
   });
 });
+
+describe('the production guard for the insecure-origin allowance', () => {
+  const insecureOnAHost = { WEB_ORIGIN: 'http://app.example.com', AUTH_ALLOW_INSECURE_ORIGIN: 'true' };
+
+  it('refuses to start with NODE_ENV=production and AUTH_ALLOW_INSECURE_ORIGIN=true, naming the variable but never a value', () => {
+    for (const env of [
+      { NODE_ENV: 'production', ...insecureOnAHost },
+      { NODE_ENV: 'production', AUTH_ALLOW_INSECURE_ORIGIN: 'true' }, // even on the default localhost origin: the flag itself is the problem
+      { NODE_ENV: 'production', WEB_ORIGIN: 'https://app.example.com', AUTH_ALLOW_INSECURE_ORIGIN: 'true' }, // and even when it would be harmless
+    ]) {
+      try {
+        loadApiConfig({ ...infra, ...env });
+        expect.unreachable(`accepted ${JSON.stringify(env)}`);
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConfigError);
+        const message = (error as ConfigError).message;
+        expect(message).toContain('AUTH_ALLOW_INSECURE_ORIGIN');
+        expect(message).toContain('NODE_ENV=production');
+        expect(message).not.toContain('app.example.com');
+        expect(message).not.toContain('redis-secret');
+        expect(message).not.toContain('db-secret');
+      }
+    }
+  });
+
+  it('accepts production with the flag off, for an https origin and for the localhost origin the Compose stack uses', () => {
+    expect(
+      loadApiConfig({
+        ...infra,
+        NODE_ENV: 'production',
+        WEB_ORIGIN: 'https://app.example.com',
+        AUTH_ALLOW_INSECURE_ORIGIN: 'false',
+      }),
+    ).toMatchObject({ NODE_ENV: 'production', AUTH_ALLOW_INSECURE_ORIGIN: false });
+    expect(loadApiConfig({ ...infra, NODE_ENV: 'production' })).toMatchObject({
+      NODE_ENV: 'production',
+      WEB_ORIGIN: 'http://localhost:5173',
+    });
+    // Plain http away from localhost is still refused in production without the flag.
+    expect(() =>
+      loadApiConfig({ ...infra, NODE_ENV: 'production', WEB_ORIGIN: 'http://app.example.com' }),
+    ).toThrow(/WEB_ORIGIN/);
+  });
+
+  it('keeps the development behavior: the flag still permits plain http on another host', () => {
+    for (const NODE_ENV of ['development', 'test'])
+      expect(loadApiConfig({ ...infra, NODE_ENV, ...insecureOnAHost })).toMatchObject({
+        NODE_ENV,
+        WEB_ORIGIN: 'http://app.example.com',
+        AUTH_ALLOW_INSECURE_ORIGIN: true,
+      });
+    // NODE_ENV defaults to development when unset.
+    expect(loadApiConfig({ ...infra, ...insecureOnAHost })).toMatchObject({
+      NODE_ENV: 'development',
+      AUTH_ALLOW_INSECURE_ORIGIN: true,
+    });
+  });
+});
