@@ -127,6 +127,75 @@ describe('detects drift between the places that describe the same variables', ()
   });
 });
 
+describe('database credentials follow least privilege (ADR-0010)', () => {
+  const COMPOSE = 'infrastructure/compose/docker-compose.yml';
+  const has = (problems, text) => problems.some((p) => p.includes(text));
+
+  it('the API connecting as the superuser instead of its own role', () => {
+    const problems = problemsOf({
+      '.env.example': [
+        [
+          'DATABASE_URL=postgresql://agentos_api:change-me-app@',
+          'DATABASE_URL=postgresql://agentos:change-me-postgres@',
+        ],
+      ],
+    });
+    assert.ok(has(problems, 'DATABASE_URL user differs from agentos_api'), problems.join('\n'));
+  });
+
+  it('a role whose URL password is not the role password', () => {
+    const problems = problemsOf({
+      '.env.example': [
+        [
+          'DATABASE_MIGRATE_URL=postgresql://agentos_migrate:change-me-migrate@',
+          'DATABASE_MIGRATE_URL=postgresql://agentos_migrate:change-me-app@',
+        ],
+      ],
+    });
+    assert.ok(
+      has(problems, 'DATABASE_MIGRATE_URL password differs from POSTGRES_MIGRATE_PASSWORD'),
+      problems.join('\n'),
+    );
+  });
+
+  it('roles that share a password', () => {
+    const problems = problemsOf({
+      '.env.example': [['POSTGRES_APP_PASSWORD=change-me-app', 'POSTGRES_APP_PASSWORD=change-me-migrate']],
+    });
+    assert.ok(has(problems, 'must be different values'), problems.join('\n'));
+  });
+
+  it('the API container receiving the superuser password', () => {
+    const problems = problemsOf({
+      [COMPOSE]: [
+        ['      API_HOST: 0.0.0.0', '      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}\n      API_HOST: 0.0.0.0'],
+      ],
+    });
+    assert.ok(has(problems, 'api receives the PostgreSQL superuser password'), problems.join('\n'));
+  });
+
+  it('the API connecting through Compose as anything but agentos_api', () => {
+    const problems = problemsOf({
+      [COMPOSE]: [['postgresql://agentos_api:', 'postgresql://${POSTGRES_USER}:']],
+    });
+    assert.ok(has(problems, 'the api must connect as agentos_api'), problems.join('\n'));
+  });
+
+  it('the migration process connecting as anything but agentos_migrate', () => {
+    const problems = problemsOf({
+      [COMPOSE]: [['postgresql://agentos_migrate:', 'postgresql://agentos_api:']],
+    });
+    assert.ok(has(problems, 'migrate must connect as agentos_migrate'), problems.join('\n'));
+  });
+
+  it('migrations that do not wait for the role provisioning', () => {
+    const problems = problemsOf({
+      [COMPOSE]: [['      db-roles: { condition: service_healthy }\n', '']],
+    });
+    assert.ok(has(problems, 'migrate must wait for db-roles'), problems.join('\n'));
+  });
+});
+
 describe('secrets and operational invariants', () => {
   it('rejects a real-looking password in .env.example', () => {
     const problems = problemsOf({

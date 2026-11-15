@@ -13,7 +13,7 @@ import {
   TransactionIsolationLevel,
   TransactionRunner,
 } from '../src/modules/database';
-import { type IsolatedDatabase, createIsolatedDatabase } from './support/isolated-database';
+import { type IsolatedDatabase, adminDatabaseUrl, createIsolatedDatabase } from './support/isolated-database';
 
 // Requires the Docker Compose stack: `pnpm setup:env && pnpm infra:up`.
 // Table-creating tests run in a throwaway database (see support/isolated-database.ts), never in the dev database.
@@ -29,7 +29,7 @@ describe('transactions (integration: real PostgreSQL, throwaway database)', () =
   };
 
   beforeAll(async () => {
-    isolated = await createIsolatedDatabase(loadApiConfig().DATABASE_URL);
+    isolated = await createIsolatedDatabase(adminDatabaseUrl());
     prisma = new PrismaService({ DATABASE_URL: isolated.url } as ApiConfig);
     await prisma.onModuleInit();
     await prisma.$executeRawUnsafe('CREATE TABLE tx_probe (id int PRIMARY KEY, note text NOT NULL)');

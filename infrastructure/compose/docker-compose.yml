@@ -82,7 +82,40 @@ services:
       timeout: 3s
       retries: 10
 
+  # Provisions the database roles (see infrastructure/postgres/roles.sql), then stays idle and reports healthy. Idempotent, so it is
+  # safe on a new volume and on an existing one (it re-applies the passwords from .env on every start, and touches no data). It
+  # idles instead of exiting because `docker compose up --wait` treats an exited container as a failure; that also lets
+  # `depends_on: service_healthy` order it. The only service besides PostgreSQL itself that holds the superuser password.
+  db-roles:
+    image: pgvector/pgvector:pg17 # for the psql client only
+    restart: 'no'
+    networks: [agentos-net]
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - run "pnpm setup:env"}
+      POSTGRES_USER: ${POSTGRES_USER:-agentos}
+      POSTGRES_DB: ${POSTGRES_DB:-agentos}
+      MIGRATE_PASSWORD: ${POSTGRES_MIGRATE_PASSWORD:?POSTGRES_MIGRATE_PASSWORD is required - run "pnpm setup:env"}
+      APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?POSTGRES_APP_PASSWORD is required - run "pnpm setup:env"}
+    volumes:
+      - ../postgres/roles.sql:/roles.sql:ro
+    command:
+      - sh
+      - -c
+      - |
+        psql -h postgres -U "$$POSTGRES_USER" -d "$$POSTGRES_DB" -v dbname="$$POSTGRES_DB" -v migrate_password="$$MIGRATE_PASSWORD" -v app_password="$$APP_PASSWORD" -f /roles.sql || exit 1
+        touch /tmp/roles-ready
+        trap 'exit 0' TERM INT
+        while :; do sleep 3600 & wait $$!; done
+    healthcheck:
+      test: ['CMD', 'test', '-f', '/tmp/roles-ready']
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    depends_on:
+      postgres: { condition: service_healthy }
+
   # One-shot: applies committed Prisma migrations, then exits 0. The API starts only after it succeeded.
+  # It connects as the MIGRATION role (owner of the schemas and tables), never as the superuser and never as the API's role.
   migrate:
     <<: *app
     restart: 'no' # a failed migration must stop the stack and stay visible, never loop
@@ -90,9 +123,10 @@ services:
     build: { <<: *build, target: api }
     command: ['pnpm', '--filter', '@agentos/api', 'exec', 'prisma', 'migrate', 'deploy']
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-agentos}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - run "pnpm setup:env"}@postgres:5432/${POSTGRES_DB:-agentos}?schema=public
+      DATABASE_MIGRATE_URL: postgresql://agentos_migrate:${POSTGRES_MIGRATE_PASSWORD:?POSTGRES_MIGRATE_PASSWORD is required - run "pnpm setup:env"}@postgres:5432/${POSTGRES_DB:-agentos}?schema=public
     depends_on:
       postgres: { condition: service_healthy }
+      db-roles: { condition: service_healthy }
 
   api:
     <<: *app
@@ -100,8 +134,9 @@ services:
     build: { <<: *build, target: api }
     environment:
       <<: *node-env
-      # Only the API gets PostgreSQL credentials. The worker has no database access by design (ADR-0006): least privilege.
-      DATABASE_URL: postgresql://${POSTGRES_USER:-agentos}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required - run "pnpm setup:env"}@postgres:5432/${POSTGRES_DB:-agentos}?schema=public
+      # Only the API and the migration process get PostgreSQL credentials; the worker has no database access by design (ADR-0006).
+      # The API connects as its own non-superuser role (agentos_api), which owns nothing: the schema owner is agentos_migrate.
+      DATABASE_URL: postgresql://agentos_api:${POSTGRES_APP_PASSWORD:?POSTGRES_APP_PASSWORD is required - run "pnpm setup:env"}@postgres:5432/${POSTGRES_DB:-agentos}?schema=public
       API_HOST: 0.0.0.0 # reachable from other containers; the HOST port below is still bound to 127.0.0.1
       API_PORT: 3000
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}

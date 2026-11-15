@@ -4,7 +4,10 @@
 // Keep ONLY the generator and datasource here. Each domain adds its own file when its phase starts
 // (for example `identity.prisma`, `agents.prisma`), so domains stay independently reviewable.
 //
-// Phase 1.2 intentionally defines no models: business entities belong to their domain phases.
+// The datasource URL is the MIGRATION role's (DATABASE_MIGRATE_URL): it is what the Prisma CLI (`db:validate`, `db:migrate`,
+// `db:deploy`, `db:status`) connects with, because only that role owns the schemas and tables and may change them. The running
+// API never reads this variable: PrismaService passes the API role's DATABASE_URL to the client explicitly, so the application
+// has no way to connect with the owner's privileges. See docs/architecture/backend.md ("Database roles").
 
 generator client {
   provider = "prisma-client-js"
@@ -12,5 +15,5 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  url      = env("DATABASE_MIGRATE_URL")
 }

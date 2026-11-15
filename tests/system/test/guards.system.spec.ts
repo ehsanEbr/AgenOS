@@ -43,6 +43,8 @@ describe('isolation guard: fault injection', () => {
     ['AGENTOS_IMAGE_TAG', 'local'],
     ['REDIS_PASSWORD', 'leaked-redis-secret-7f3a'],
     ['POSTGRES_PASSWORD', 'leaked-postgres-secret-7f3a'],
+    ['POSTGRES_MIGRATE_PASSWORD', 'leaked-migrate-secret-7f3a'],
+    ['POSTGRES_APP_PASSWORD', 'leaked-app-secret-7f3a'],
   ];
 
   it.each(faults)(
@@ -51,6 +53,8 @@ describe('isolation guard: fault injection', () => {
       const generated = {
         REDIS_PASSWORD: 'generated-redis-secret-91bd',
         POSTGRES_PASSWORD: 'generated-postgres-secret-91bd',
+        POSTGRES_MIGRATE_PASSWORD: 'generated-migrate-secret-91bd',
+        POSTGRES_APP_PASSWORD: 'generated-app-secret-91bd',
       };
       const secrets = [...Object.values(generated), leakedValue];
 
@@ -110,6 +114,9 @@ describe('ambient environment pollution is neutralized (the Nx / developer .env 
       WEB_PORT: '5173',
       REDIS_PASSWORD: 'ambient-redis-secret-c0de',
       POSTGRES_PASSWORD: 'ambient-postgres-secret-c0de',
+      POSTGRES_MIGRATE_PASSWORD: 'ambient-migrate-secret-c0de',
+      POSTGRES_APP_PASSWORD: 'ambient-app-secret-c0de',
+      DATABASE_ADMIN_URL: 'postgresql://agentos:ambient-admin-secret@127.0.0.1:5432/agentos',
       AGENTOS_NETWORK: 'agentos-net',
       AGENTOS_IMAGE_TAG: 'local',
       GIT_REVISION: 'ambient-revision',
