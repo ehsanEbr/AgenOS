@@ -17,5 +17,5 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_MIGRATE_URL")
-  schemas  = ["identity", "security"]
+  schemas  = ["identity", "projects", "security"]
 }

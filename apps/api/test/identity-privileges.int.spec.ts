@@ -117,7 +117,7 @@ describe('the application role', () => {
     expect(role).toEqual({ super: false, createrole: false });
   });
 
-  it('holds exactly the privileges the Identity and organizations modules need, and no others (least privilege)', async () => {
+  it('holds exactly the table privileges the Identity, organizations and projects modules need, and no others (least privilege)', async () => {
     const grants = await query<{ table: string; privilege: string }>(
       owner,
       `SELECT table_schema || '.' || table_name AS "table", privilege_type AS privilege
@@ -143,6 +143,13 @@ describe('the application role', () => {
       { table: 'identity.user', privilege: 'INSERT' },
       { table: 'identity.user', privilege: 'SELECT' },
       { table: 'identity.user', privilege: 'UPDATE' },
+      // Projects: created and read; their updates are COLUMN-level grants (see projects-database.int.spec.ts), so no table-level UPDATE and no DELETE.
+      { table: 'projects.project', privilege: 'INSERT' },
+      { table: 'projects.project', privilege: 'SELECT' },
+      // Project memberships are added, re-roled (column-level) and removed.
+      { table: 'projects.project_member', privilege: 'DELETE' },
+      { table: 'projects.project_member', privilege: 'INSERT' },
+      { table: 'projects.project_member', privilege: 'SELECT' },
       // The audit trail: INSERT and nothing else. In particular NO SELECT.
       { table: 'security.audit_log', privilege: 'INSERT' },
     ]);
@@ -157,6 +164,9 @@ describe('the application role', () => {
       'DELETE FROM identity.organization',
       'TRUNCATE identity.organization CASCADE',
       'TRUNCATE identity.membership',
+      'DELETE FROM projects.project',
+      'TRUNCATE projects.project CASCADE',
+      'TRUNCATE projects.project_member',
     ])
       await expect(run(api, statement), statement).rejects.toThrow(denied);
   });

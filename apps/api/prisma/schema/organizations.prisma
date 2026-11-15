@@ -19,6 +19,8 @@ model Organization {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   memberships Membership[]
+  /// The other side of projects.Project (a relation needs both ends in the schema). Organizations never reads it.
+  projects    Project[]
 
   @@map("organization")
   @@schema("identity")
@@ -34,8 +36,10 @@ model Membership {
   updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   // Foreign keys point from this module to the upstream ones (organizations -> identity) and never cascade (ADR-0010, decision 7).
-  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Restrict)
+  /// The other side of projects.ProjectMember. Organizations never reads it.
+  projectMembers ProjectMember[]
 
   @@unique([organizationId, userId])
   @@index([userId])
