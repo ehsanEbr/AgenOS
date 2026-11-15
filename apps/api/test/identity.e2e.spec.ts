@@ -104,19 +104,27 @@ describe('authentication is the default', () => {
     ]);
     // Everything else is authenticated by the global guard. (What each organization route additionally requires is pinned, route by
     // route, in route-metadata.e2e.spec.ts.)
-    expect(protectedRoutes.sort()).toEqual([
-      'DELETE /organizations/:organizationId/members/:userId',
-      'GET /me',
-      'GET /organizations',
-      'GET /organizations/:organizationId',
-      'GET /organizations/:organizationId/members',
-      'PATCH /organizations/:organizationId',
-      'PATCH /organizations/:organizationId/members/:userId',
-      'POST /auth/logout',
-      'POST /auth/logout-all',
-      'POST /me/password',
-      'POST /organizations',
-      'POST /organizations/:organizationId/members',
-    ]);
+    expect(protectedRoutes.sort()).toEqual(
+      [
+        'DELETE /organizations/:organizationId/members/:userId',
+        'GET /me',
+        'GET /organizations',
+        'GET /organizations/:organizationId',
+        'GET /organizations/:organizationId/members',
+        'GET /projects',
+        'GET /projects/:projectId',
+        'PATCH /organizations/:organizationId',
+        'PATCH /organizations/:organizationId/members/:userId',
+        'POST /auth/logout',
+        'POST /auth/logout-all',
+        'POST /me/password',
+        'POST /organizations',
+        'PATCH /projects/:projectId',
+        'POST /organizations/:organizationId/members',
+        'POST /projects',
+        'POST /projects/:projectId/archive',
+        'POST /projects/:projectId/restore',
+      ].sort(),
+    );
   });
 });

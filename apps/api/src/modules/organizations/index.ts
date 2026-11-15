@@ -9,4 +9,4 @@ export {
 } from './application/membership-lifecycle';
 export { permissionsFor } from './domain/membership-policy';
 export { TenantAccess } from './application/tenant-access';
-export { OrganizationScope, scopeOf, type TenantContext } from './domain/tenant';
+export { OrganizationScope, requireScope, scopeOf, type TenantContext } from './domain/tenant';
