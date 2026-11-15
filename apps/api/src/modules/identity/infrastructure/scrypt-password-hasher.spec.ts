@@ -1,14 +1,18 @@
 import { randomBytes, scryptSync } from 'node:crypto';
 import { Logger } from '@nestjs/common';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { formatPasswordHash, parsePasswordHash } from '../domain/password-hash';
 import { PASSWORD_HASH_POLICY } from '../domain/password-policy';
 import { type DeriveKey, ScryptPasswordHasher } from './scrypt-password-hasher';
 
-// These tests use the REAL scrypt at the approved cost (about a quarter of a second and 128 MiB each), because what is being
-// verified is the real parameters. The concurrency and parameter-guard tests use a stand-in derivation instead.
+// These tests use the REAL scrypt at the approved cost (about a quarter of a second and 128 MiB each on a developer machine), because
+// what is being verified is the real parameters. The concurrency and parameter-guard tests use a stand-in derivation instead.
+//
+// The cost is NOT reduced to make them fast. A shared CI runner can be several times slower than a laptop (a Windows runner exceeded
+// vitest's default 5 s for three real hashes), so these tests carry an explicit, generous timeout instead.
+const REAL_SCRYPT_TIMEOUT_MS = 30_000;
 
-describe('ScryptPasswordHasher with the real key derivation', () => {
+describe('ScryptPasswordHasher with the real key derivation', { timeout: REAL_SCRYPT_TIMEOUT_MS }, () => {
   beforeEach(() => {
     vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
   });
@@ -16,14 +20,22 @@ describe('ScryptPasswordHasher with the real key derivation', () => {
 
   const hasher = new ScryptPasswordHasher();
 
-  it('produces a versioned hash with the approved parameters, a 16-byte salt and a 32-byte key', async () => {
-    const stored = await hasher.hash('correct horse battery staple');
+  // One real hash, computed once, for the tests that only INSPECT or VERIFY a hash. A hash is an immutable string, so sharing it does not
+  // couple the tests; tests that exercise `hash()` itself (fresh salts, Unicode equivalence) still compute their own.
+  const SHARED_PASSWORD = 'right password 123';
+  let sharedHash: string;
+  beforeAll(async () => {
+    sharedHash = await hasher.hash(SHARED_PASSWORD);
+  }, REAL_SCRYPT_TIMEOUT_MS);
+
+  it('produces a versioned hash with the approved parameters, a 16-byte salt and a 32-byte key', () => {
+    const stored = sharedHash; // the output of hasher.hash() with the real policy
     expect(stored).toMatch(/^\$scrypt\$v=1\$ln=17,r=8,p=1,len=32\$/);
     const parts = parsePasswordHash(stored);
     expect(parts).toMatchObject({ costLog2: 17, blockSize: 8, parallelization: 1, keyLength: 32 });
     expect(parts?.salt).toHaveLength(16);
     expect(parts?.hash).toHaveLength(32);
-    expect(stored).not.toContain('correct horse');
+    expect(stored).not.toContain(SHARED_PASSWORD);
   });
 
   it('uses a fresh random salt every time, so equal passwords never give equal hashes', async () => {
@@ -33,8 +45,8 @@ describe('ScryptPasswordHasher with the real key derivation', () => {
   });
 
   it('accepts the right password and rejects a wrong one, without asking for an upgrade of a current hash', async () => {
-    const stored = await hasher.hash('right password 123');
-    expect(await hasher.verify('right password 123', stored)).toEqual({ valid: true, needsRehash: false });
+    const stored = sharedHash;
+    expect(await hasher.verify(SHARED_PASSWORD, stored)).toEqual({ valid: true, needsRehash: false });
     expect(await hasher.verify('wrong password 123', stored)).toEqual({ valid: false, needsRehash: false });
   });
 
