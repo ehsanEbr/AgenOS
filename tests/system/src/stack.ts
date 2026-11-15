@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { QueueProducer, createRedisConnection, type Redis } from '@agentos/queue';
 import { Queue } from 'bullmq';
+import { waitFor } from './wait';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
 const COMPOSE_FILE = join(REPO_ROOT, 'infrastructure/compose/docker-compose.yml');
@@ -354,10 +355,84 @@ export class Stack {
    * Do NOT use `docker kill` / `docker stop` for that: Docker treats them as a manual stop and never restarts the container.
    */
   async signalWorkerProcess(signal: 'SIGKILL' | 'SIGTERM'): Promise<void> {
-    const script = `const {pid}=JSON.parse(require('fs').readFileSync('/tmp/worker-health.json','utf8'));process.kill(pid,'${signal}')`;
+    // 1. Find the process. This command runs to completion BEFORE any signal is sent, so it cannot be caught by the container dying.
+    const pid = await this.workerProcessId();
+    const before = await this.state('worker');
+
+    // 2. Deliver the signal from a DETACHED exec. A SIGKILL ends the container's main process, and Docker then tears down every exec
+    //    session in the container; an attached `exec` that was still finishing could return a non-zero code with no message, which
+    //    made this helper fail intermittently on a loaded CI runner although the signal had been delivered. A detached exec returns
+    //    at once and nothing waits on it. The signal still goes to the worker PROCESS (`process.kill(pid)`), not to the container.
+    const sent = await this.compose([
+      'exec',
+      '-d',
+      '-T',
+      'worker',
+      'node',
+      '-e',
+      `process.kill(${pid},'${signal}')`,
+    ]);
+    if (sent.code !== 0)
+      throw new Error(
+        `could not start the ${signal} command for worker process ${pid} (exit ${sent.code}): ${sent.stderr.slice(-500)}`,
+      );
+
+    // 3. A detached exec reports nothing, so prove that the signal ARRIVED by its effect on the target process.
+    try {
+      await waitFor(() => this.signalEffect(pid, before), {
+        timeoutMs: 20_000,
+        intervalMs: 250,
+        message: `${signal} to have an effect on worker process ${pid}`,
+      });
+    } catch {
+      throw new Error(
+        `${signal} was sent to worker process ${pid} but the process did not react within 20 s: it is still the same process, ` +
+          'neither draining nor gone, so the signal was not delivered (or was ignored)',
+      );
+    }
+  }
+
+  /**
+   * The pid of the worker process, read from its heartbeat file and checked to be alive. Fails with a message that says WHICH
+   * thing is missing (no container, no file, not JSON, no pid, no such process) instead of an empty error.
+   */
+  private async workerProcessId(): Promise<number> {
+    const script = [
+      'let raw;',
+      "try { raw = require('fs').readFileSync('/tmp/worker-health.json', 'utf8'); } catch (e) { console.error('no heartbeat file (' + e.code + ')'); process.exit(3); }",
+      'let pid;',
+      "try { pid = JSON.parse(raw).pid; } catch { console.error('the heartbeat file is not valid JSON'); process.exit(4); }",
+      "if (!Number.isInteger(pid) || pid <= 0) { console.error('the heartbeat file has no process id'); process.exit(4); }",
+      "try { process.kill(pid, 0); } catch (e) { console.error('process ' + pid + ' does not exist (' + e.code + ')'); process.exit(5); }",
+      'console.log(pid);',
+    ].join('\n');
     const result = await this.exec('worker', ['node', '-e', script]);
     if (result.code !== 0)
-      throw new Error(`could not signal the worker process: ${result.stderr.slice(-500)}`);
+      throw new Error(
+        `no worker process to signal (looking it up failed with exit ${result.code}): ${(result.stderr || result.stdout).trim().slice(-500) || 'no output'}`,
+      );
+    const pid = Number(result.stdout.trim());
+    if (!Number.isInteger(pid) || pid <= 0)
+      throw new Error(
+        `no worker process to signal: unexpected process id "${result.stdout.trim().slice(0, 40)}"`,
+      );
+    return pid;
+  }
+
+  /** What changed because of the signal, or undefined while nothing has yet: the container stopped or restarted, or the worker is draining. */
+  private async signalEffect(pid: number, before: ContainerState): Promise<string | undefined> {
+    const now = await this.state('worker');
+    if (now.status !== 'running') return `the container is ${now.status}`;
+    if (now.startedAt !== before.startedAt || now.restartCount !== before.restartCount)
+      return 'the container restarted';
+    const probe = [
+      "const s = JSON.parse(require('fs').readFileSync('/tmp/worker-health.json', 'utf8'));",
+      `if (s.pid !== ${pid}) console.log('a different worker process took over');`,
+      "else if (['draining', 'stopped', 'failed'].includes(s.state)) console.log('the worker is ' + s.state);",
+      `else { try { process.kill(${pid}, 0); } catch { console.log('the process is gone'); } }`,
+    ].join('\n');
+    const result = await this.exec('worker', ['node', '-e', probe]);
+    return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : undefined; // a failed probe: the container is going away, look again
   }
 
   async logs(service: string): Promise<string> {

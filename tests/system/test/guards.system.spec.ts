@@ -173,3 +173,18 @@ describe('image provenance rule', () => {
     expect(checkProvenance(all(REVISION), `${REVISION}-dirty`)).toHaveLength(3);
   });
 });
+
+describe('the worker signal helper fails with a message that names the problem', () => {
+  it('says there is no worker process to signal when no worker is running, instead of an empty error', async () => {
+    const stack = await Stack.create(); // nothing is started
+    try {
+      const error = (await stack.signalWorkerProcess('SIGKILL').catch((caught: unknown) => caught)) as Error;
+      expect(error).toBeInstanceOf(Error);
+      expect(error.message).toMatch(/^no worker process to signal/);
+      expect(error.message.length).toBeGreaterThan(40); // it carries the reason, not just the headline
+      expect(error.message).toMatch(/not running|no such|no container/i);
+    } finally {
+      await stack.destroy(); // nothing was started: this only removes the temp credentials
+    }
+  });
+});
