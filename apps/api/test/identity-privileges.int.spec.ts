@@ -117,7 +117,7 @@ describe('the application role', () => {
     expect(role).toEqual({ super: false, createrole: false });
   });
 
-  it('holds exactly the privileges the Identity module needs, and no others (least privilege)', async () => {
+  it('holds exactly the privileges the Identity and organizations modules need, and no others (least privilege)', async () => {
     const grants = await query<{ table: string; privilege: string }>(
       owner,
       `SELECT table_schema || '.' || table_name AS "table", privilege_type AS privilege
@@ -128,6 +128,15 @@ describe('the application role', () => {
       { table: 'identity.credential', privilege: 'INSERT' },
       { table: 'identity.credential', privilege: 'SELECT' },
       { table: 'identity.credential', privilege: 'UPDATE' },
+      // Memberships are added, re-roled and removed (and SELECT ... FOR UPDATE, which the last-owner lock uses, needs UPDATE).
+      { table: 'identity.membership', privilege: 'DELETE' },
+      { table: 'identity.membership', privilege: 'INSERT' },
+      { table: 'identity.membership', privilege: 'SELECT' },
+      { table: 'identity.membership', privilege: 'UPDATE' },
+      // Organizations are created and renamed, never deleted in this phase.
+      { table: 'identity.organization', privilege: 'INSERT' },
+      { table: 'identity.organization', privilege: 'SELECT' },
+      { table: 'identity.organization', privilege: 'UPDATE' },
       { table: 'identity.session', privilege: 'INSERT' },
       { table: 'identity.session', privilege: 'SELECT' },
       { table: 'identity.session', privilege: 'UPDATE' },
@@ -145,8 +154,97 @@ describe('the application role', () => {
       'DELETE FROM identity.session',
       'DELETE FROM identity.credential',
       'TRUNCATE identity."user" CASCADE',
+      'DELETE FROM identity.organization',
+      'TRUNCATE identity.organization CASCADE',
+      'TRUNCATE identity.membership',
     ])
       await expect(run(api, statement), statement).rejects.toThrow(denied);
+  });
+});
+
+describe('the organization tables', () => {
+  const UNIQUE_VIOLATION = '23505';
+  const FOREIGN_KEY_VIOLATION = '23503';
+  const CHECK = '23514';
+  const INVALID_TEXT = '22P02';
+
+  const insertOrganization = (client: PrismaClient, name: string, id = randomUUID()) =>
+    client.$executeRaw`INSERT INTO identity.organization (id, name, updated_at) VALUES (${id}::uuid, ${name}, now())`;
+  const insertMembership = (client: PrismaClient, organizationId: string, userId: string, role = 'member') =>
+    client.$executeRawUnsafe(
+      `INSERT INTO identity.membership (id, organization_id, user_id, role, updated_at) VALUES ('${randomUUID()}', '${organizationId}', '${userId}', '${role}', now())`,
+    );
+  const sqlstate = async (work: Promise<unknown>) => {
+    try {
+      await work;
+      return 'accepted';
+    } catch (error) {
+      return sqlstateOf(error) ?? 'unknown error';
+    }
+  };
+  const newUser = async () => {
+    const id = randomUUID();
+    await owner.$executeRaw`INSERT INTO identity."user" (id, email, display_name, updated_at) VALUES (${id}::uuid, ${`org-${uid()}@example.com`}, 'Org Test', now())`;
+    return id;
+  };
+
+  it('lets the application role create, rename, lock and remove memberships, but not delete organizations', async () => {
+    const [organization, user] = [randomUUID(), await newUser()];
+    await insertOrganization(api, 'Acme', organization);
+    await insertMembership(api, organization, user, 'owner');
+    await api.$transaction(async (tx) => {
+      // the statement the last-owner protection runs: it needs UPDATE, which is granted
+      const locked = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM identity.membership WHERE organization_id = ${organization}::uuid AND role = 'owner'::identity.organization_role FOR UPDATE`;
+      expect(locked).toHaveLength(1);
+    });
+    await run(
+      api,
+      `UPDATE identity.membership SET role = 'viewer' WHERE organization_id = '${organization}'`,
+    );
+    await run(api, `UPDATE identity.organization SET name = 'Renamed' WHERE id = '${organization}'`);
+    expect(await run(api, `DELETE FROM identity.membership WHERE organization_id = '${organization}'`)).toBe(
+      1,
+    );
+    await expect(run(api, `DELETE FROM identity.organization WHERE id = '${organization}'`)).rejects.toThrow(
+      denied,
+    );
+  });
+
+  it('refuses an empty, blank or oversized organization name (the application never produces one)', async () => {
+    expect(await sqlstate(insertOrganization(api, ''))).toBe(CHECK);
+    expect(await sqlstate(insertOrganization(api, '    '))).toBe(CHECK);
+    expect(await sqlstate(insertOrganization(api, 'x'.repeat(101)))).toBe(CHECK);
+    expect(await sqlstate(insertOrganization(api, 'x'.repeat(100)))).toBe('accepted');
+    const id = randomUUID();
+    await insertOrganization(api, 'Fine', id);
+    expect(await sqlstate(run(api, `UPDATE identity.organization SET name = '' WHERE id = '${id}'`))).toBe(
+      CHECK,
+    );
+  });
+
+  it('keeps one membership per user and organization, a valid role, and references that exist', async () => {
+    const [organization, user] = [randomUUID(), await newUser()];
+    await insertOrganization(api, 'Unique', organization);
+    await insertMembership(api, organization, user);
+    expect(await sqlstate(insertMembership(api, organization, user, 'admin'))).toBe(UNIQUE_VIOLATION);
+    expect(await sqlstate(insertMembership(api, organization, await newUser(), 'sovereign'))).toBe(
+      INVALID_TEXT,
+    );
+    expect(await sqlstate(insertMembership(api, randomUUID(), await newUser()))).toBe(FOREIGN_KEY_VIOLATION);
+    expect(await sqlstate(insertMembership(api, organization, randomUUID()))).toBe(FOREIGN_KEY_VIOLATION);
+  });
+
+  it('never cascades: a user or an organization that has memberships cannot be deleted (even by the owner of the tables)', async () => {
+    const [organization, user] = [randomUUID(), await newUser()];
+    await insertOrganization(api, 'Restrict', organization);
+    await insertMembership(api, organization, user);
+    expect(await sqlstate(run(owner, `DELETE FROM identity."user" WHERE id = '${user}'`))).toBe(
+      FOREIGN_KEY_VIOLATION,
+    );
+    expect(await sqlstate(run(owner, `DELETE FROM identity.organization WHERE id = '${organization}'`))).toBe(
+      FOREIGN_KEY_VIOLATION,
+    );
   });
 });
 

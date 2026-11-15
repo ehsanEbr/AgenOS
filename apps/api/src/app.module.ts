@@ -9,6 +9,7 @@ import { APP_CONFIG, ConfigModule, type ApiConfig } from './modules/config';
 import { DatabaseExceptionFilter } from './modules/database';
 import { HealthModule } from './modules/health';
 import { AuthenticationGuard, IdentityModule } from './modules/identity';
+import { OrganizationsModule } from './modules/organizations';
 
 /**
  * Composition root: wires modules and registers the global (cross-cutting) pipe, filters and guard.
@@ -30,6 +31,7 @@ import { AuthenticationGuard, IdentityModule } from './modules/identity';
     }),
     HealthModule,
     IdentityModule,
+    OrganizationsModule,
   ],
   providers: [
     { provide: APP_PIPE, useClass: ZodValidationPipe },

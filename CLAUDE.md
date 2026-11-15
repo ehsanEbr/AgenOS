@@ -2,7 +2,7 @@
 
 AgentOS owns orchestration, intelligence, governance and the execution lifecycle. External LLM providers and agent
 frameworks are replaceable infrastructure behind adapters. Architecture: modular monolith + independent workers,
-TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation phases are complete through **1.6 System Integration & CI** (see README). Phase 2 (identity, organizations, projects; ADR-0010) is delivered step by step, each step reviewed before the next; **2.1 (authentication and sessions) is implemented**. Domain jobs and the API enqueuing work are later phases. Rulebooks:
+TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation phases are complete through **1.6 System Integration & CI** (see README). Phase 2 (identity, organizations, projects; ADR-0010) is delivered step by step, each step reviewed before the next; **2.1 (authentication and sessions) and 2.2 (organizations and memberships) are implemented**. Domain jobs and the API enqueuing work are later phases. Rulebooks:
 `docs/architecture/backend.md` (read before touching `apps/api`), `docs/architecture/frontend.md` (read before touching `apps/web`) `docs/architecture/workers.md` (read before touching `apps/worker`, `packages/queue` or job contracts) and `docs/architecture/docker-compose.md` (read before touching Docker, Compose or process lifecycle/health).
 
 ## Rules (from the architecture spec, section 20)
@@ -49,6 +49,7 @@ TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation
 - Prisma: one `.prisma` file per module under `apps/api/prisma/schema/`, one PostgreSQL schema per domain (`@@schema`); migrations are committed; applied migrations are
   never edited; production uses `db:deploy` only. The Prisma CLI runs as the **migration role** (`DATABASE_MIGRATE_URL`); the API runs as its own non-superuser role (`DATABASE_URL`) that owns nothing, so **every migration grants exactly what its tables need to `agentos_app`** (see backend.md, "Database roles").
 - Authentication is the default: every route needs a session unless it is explicitly `@Public()`. The caller is a `Principal` (`@CurrentPrincipal()`). Audit events go through `AuditRecorder.record(event, tx)` in the same transaction as the change; the audit table is append-only. Never log passwords, hashes, tokens or cookies.
+- Tenancy and authorization: a client-supplied `organizationId` is only a selector. `TenantAccess` turns it into a `TenantContext` (non-member = 404, member without the permission = 403); org-scoped routes carry `@RequirePermission` + `OrganizationAccessGuard`, org-scoped repository methods take an `OrganizationScope` first and fail closed. Roles and permissions are code (`packages/contracts/src/permissions.ts`). Every route is `@Public()`, permission-gated or on the account-scoped allowlist of `test/route-metadata.e2e.spec.ts`. Membership changes take the owners lock first (`lockOwners`) so an organization always keeps an owner.
 - Redis is cache / ephemeral state only. PostgreSQL is the source of truth.
 
 Web conventions (details in frontend.md):

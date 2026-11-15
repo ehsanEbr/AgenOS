@@ -1,0 +1,44 @@
+// Organizations and memberships: tenancy and authorization (ADR-0010). Owned by apps/api/src/modules/organizations. The tables live in the
+// `identity` PostgreSQL schema next to the identity tables, but the two modules never share a table (ownership is by table).
+// Roles are code (packages/contracts/src/permissions.ts): the enum below only stores which role a member has.
+
+enum OrganizationRole {
+  owner
+  admin
+  member
+  viewer
+
+  @@map("organization_role")
+  @@schema("identity")
+}
+
+model Organization {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  memberships Membership[]
+
+  @@map("organization")
+  @@schema("identity")
+}
+
+/// One user in one organization, with one role. A user is a member at most once per organization.
+model Membership {
+  id             String           @id @default(uuid()) @db.Uuid
+  organizationId String           @map("organization_id") @db.Uuid
+  userId         String           @map("user_id") @db.Uuid
+  role           OrganizationRole
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Foreign keys point from this module to the upstream ones (organizations -> identity) and never cascade (ADR-0010, decision 7).
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("membership")
+  @@schema("identity")
+}

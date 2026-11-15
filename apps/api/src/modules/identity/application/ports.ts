@@ -17,6 +17,7 @@ export interface NewUser {
 export interface UserRepository {
   findByEmail(email: string, db?: DatabaseClient): Promise<UserRecord | null>;
   findById(id: string, db?: DatabaseClient): Promise<UserRecord | null>;
+  findByIds(ids: readonly string[], db?: DatabaseClient): Promise<UserRecord[]>;
   hasAnyUser(db?: DatabaseClient): Promise<boolean>;
   /** Serializes registrations until the transaction ends (bootstrap must not race: two "first" users are impossible). */
   lockRegistration(db: DatabaseClient): Promise<void>;

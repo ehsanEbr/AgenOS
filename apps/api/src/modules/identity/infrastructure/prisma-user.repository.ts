@@ -32,6 +32,11 @@ export class PrismaUserRepository implements UserRepository {
     return row && toUserRecord(row);
   }
 
+  async findByIds(ids: readonly string[], db: DatabaseClient = this.prisma): Promise<UserRecord[]> {
+    if (ids.length === 0) return [];
+    return (await db.user.findMany({ where: { id: { in: [...ids] } } })).map(toUserRecord);
+  }
+
   async hasAnyUser(db: DatabaseClient = this.prisma): Promise<boolean> {
     return (await db.user.findFirst({ select: { id: true } })) !== null;
   }
