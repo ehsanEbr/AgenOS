@@ -1,6 +1,6 @@
 # ADR-0010: Identity, organizations and projects (first domain slice)
 
-**Status:** Proposed, revision 2 (refined after the first architectural review; awaiting the final review; no implementation has started)
+**Status:** Proposed, revision 3 (final decisions of the architectural review recorded; awaiting the final review; no implementation has started)
 **Context:** The foundation (Phases 1.1-1.6) is merged: API, web app, worker, contracts, queue, Compose stack, system tests and CI.
 No domain entity exists yet. The specification ([§5.1, §5.2, §6.1, §6.2, §6.4, §7.3, §12.1, §12.2, §12.6, §18](../architecture/technical-architecture-specification.md))
 makes Identity, Organizations and Projects the first domain phase, and steps 1-2 of the MVP scenario (§19: "user creates an
@@ -8,7 +8,9 @@ organization", "user creates a project") depend on it. Every later domain is sco
 authorization decisions made here are the hardest to change afterwards. This is also the first real test of the conventions in
 [backend.md](../architecture/backend.md), whose ADR-0004 expects amendments ("the conventions are unproven against a real domain").
 
-## Decisions already approved (review of revision 1)
+## Approved decisions
+
+**From the review of revision 1** (not reopened):
 
 1. Local email/password authentication with PostgreSQL-backed opaque server-side sessions.
 2. Node.js `crypto.scrypt` for password hashing.
@@ -20,7 +22,21 @@ authorization decisions made here are the hardest to change afterwards. This is 
 8. Application-enforced tenancy first; PostgreSQL RLS deferred.
 9. A minimal transactional, append-only audit capability in Phase 2.
 
-This revision refines how they are realized. It does not reopen them.
+**From the review of revision 2** (the nine open questions, now final):
+
+| #   | Question                         | Final decision                                                                                                                                                                                                                                                                                                                                                                                          |
+| --- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Project deletion                 | Archive and restore are supported. **Permanent deletion is deferred** until retention and dependent-data policies are designed. No `DELETE` endpoint and no `project.deleted` action exist in Phase 2.                                                                                                                                                                                                  |
+| 2   | Organization creation            | Any authenticated user may create an organization.                                                                                                                                                                                                                                                                                                                                                      |
+| 3   | Closed instance, more users      | Registration stays closed by default after bootstrap. With no invitation mechanism, an **instance operator must explicitly enable registration** (`AUTH_ALLOW_REGISTRATION=true`) when another user needs to join. This is a documented operational limitation (decision 2, Known limitations).                                                                                                         |
+| 4   | Redis unavailable at sign-in     | **Fail closed** for new sign-in attempts while the required rate limiter is unavailable. PostgreSQL-backed session validation does **not** depend on Redis (decision 2).                                                                                                                                                                                                                                |
+| 5   | Audit read API                   | Deferred. The data model and the writer are kept ready for a future authorized reader (decision 6).                                                                                                                                                                                                                                                                                                     |
+| 6   | Append-only trigger              | Included in Phase 2. Database superusers and sufficiently privileged schema owners remain outside this protection boundary, which the ADR states (decision 6).                                                                                                                                                                                                                                          |
+| 7   | Organization roles               | Code-owned role definitions and a code-owned permission matrix; an **enum** for the supported role values; system roles are never mutable runtime data (decision 5).                                                                                                                                                                                                                                    |
+| 8   | Project roles and default access | `project_admin`, `project_member`, `project_viewer`. Organization membership alone gives no project access. Organization `owner` and `admin` have implicit administrative access to every project of their organization; `member` and `viewer` need explicit project membership. Project roles never elevate organization-level privileges. Implemented centrally and tested consistently (decision 5). |
+| 9   | Delivery                         | The four-step plan is unchanged. **Each step requires review and approval before the next begins** (decision 10).                                                                                                                                                                                                                                                                                       |
+
+Revisions 2 and 3 refine how these decisions are realized. They do not reopen them.
 
 ## Scope
 
@@ -117,14 +133,26 @@ as an amendment to apply when step 2.1 proves it.
   address, never by raw values. Failed sign-ins: per account (counted even for emails that do not exist, so the limiter itself does
   not reveal which accounts exist) and per address; registration and password change have their own limits. Over a limit the
   answer is `429` with `Retry-After` and one generic message. Numbers live in code (like the queue retry policy), not in the
-  environment. If Redis is unavailable, sign-in and registration **fail closed** (`503`, generic): they are the abuse surface, and
-  session resolution does not use Redis, so existing sessions keep working. Client address comes from `req.ip` with Express
-  `trust proxy` set from configuration (`TRUST_PROXY_HOPS`, default 0), because behind nginx the socket address is the proxy.
+  environment. **If the limiter is unavailable (Redis down), the endpoints that depend on it fail closed** with a generic `503`:
+  sign-in, registration and password change (each verifies or sets a credential, so each is a guessing or abuse surface). The
+  rationale: a limiter that silently disappears is an attack window. **Nothing else depends on Redis.** Session validation reads
+  PostgreSQL only (including the throttled `last_seen_at` write), so a request that carries an existing session, `GET /me`,
+  `POST /auth/logout` and `POST /auth/logout-all` keep working during a Redis outage; only _new_ sign-ins stop. Mandatory test:
+  with Redis stopped, sign-in answers 503, an already-authenticated request answers 200 and logout succeeds. Client address comes
+  from `req.ip` with Express `trust proxy` set from configuration (`TRUST_PROXY_HOPS`, default 0), because behind nginx the socket
+  address is the proxy.
 - **Generic failures.** Unknown email, wrong password and disabled account produce the same status, code, message and (by the dummy
   verification in decision 3) comparable timing. A different, specific error appears only after authentication succeeds.
 - **Bootstrap and registration.** `POST /auth/register` is allowed when no user exists yet (instance bootstrap, serialized with a
   transaction-level advisory lock so two simultaneous first registrations cannot both win) or when `AUTH_ALLOW_REGISTRATION=true`;
-  otherwise `403 registration_closed`. Registration creates a user and nothing else.
+  otherwise `403 registration_closed`. Registration creates a user and nothing else. Any authenticated user may then create an
+  organization (`POST /organizations`) and becomes its `owner`.
+- **Operational limitation: adding a user to a closed instance.** There are no invitations and no operator-created accounts in
+  Phase 2. To let another person join, **an instance operator must set `AUTH_ALLOW_REGISTRATION=true` and restart the API** (the
+  value is read at startup), let that person register, and set it back. While it is `true`, **anyone who can reach the API can
+  create an account**, so it should only be enabled on a trusted network or for the shortest possible time. An existing user can
+  then be added to an organization by an owner or admin (`POST /organizations/:id/members`, by email). This is documented in
+  environment.md when implemented and recorded under Known limitations.
 - **`Principal`** is `{ userId, sessionId }` and is the only thing authentication hands downstream. A later OIDC login produces the
   same `Principal` from a different credential type; nothing downstream changes.
 
@@ -136,7 +164,7 @@ as an amendment to apply when step 2.1 proves it.
 | Cost                  | N = 2^17 (131072), r = 8, p = 1: the first OWASP-listed scrypt configuration, 128 MiB of memory per hash                                                                                                                                                                                                                                                         |
 | Output length         | 32 bytes                                                                                                                                                                                                                                                                                                                                                         |
 | Salt                  | 16 random bytes per password (`crypto.randomBytes`), never reused, never derived from user data                                                                                                                                                                                                                                                                  |
-| `maxmem`              | Set explicitly to 256 MiB. Verified: Node's default (32 MiB) rejects N = 2^17 with `ERR_CRYPTO_INVALID_SCRYPT_PARAMS`                                                                                                                                                                                                                                            |
+| `maxmem`              | Set explicitly on every call to 256 MiB: twice the 128 MiB the approved cost needs, so the call has headroom but is still a hard ceiling. It is a limit, not a reservation. Verified: Node's default (32 MiB) rejects N = 2^17 with `ERR_CRYPTO_INVALID_SCRYPT_PARAMS`, so omitting it breaks sign-in rather than weakening it                                   |
 | Input                 | NFKC-normalized, then UTF-8. Minimum 12 characters, maximum 1024 bytes (bounds the work an attacker can force), no composition rules                                                                                                                                                                                                                             |
 | Stored representation | One versioned string, `$scrypt$v=1$ln=17,r=8,p=1,len=32$<salt>$<hash>` (unpadded base64url), so cost and algorithm travel with the hash                                                                                                                                                                                                                          |
 | Comparison            | `crypto.timingSafeEqual` over equal-length buffers, after re-deriving with the **stored** parameters                                                                                                                                                                                                                                                             |
@@ -146,9 +174,29 @@ as an amendment to apply when step 2.1 proves it.
 Measured on the development machine (Node 22.14, Windows): about 265 ms per hash at N = 2^17 (about 253 ms for the equivalent
 N = 2^16, r = 8, p = 2 at 64 MiB); six concurrent hashes took about 590 ms in total, because libuv's four-thread pool runs four at a
 time. So the operational cost is memory and thread-pool occupancy, not latency: up to 4 x 128 MiB transiently. Mitigation: a
-per-process semaphore limits concurrent hashing to 2 (peak about 256 MiB), excess requests wait briefly then receive `503`, and the
-rate limiter runs **before** hashing. Containers running the API need memory headroom for this (documented in docker-compose.md at
-implementation time). No pepper is used: it needs secret management that does not exist yet (recorded as a limitation).
+semaphore limits concurrent hashing to **2 per API process**, excess requests wait briefly then receive `503`, and the rate limiter
+runs **before** hashing. No pepper is used: it needs secret management that does not exist yet (recorded as a limitation).
+
+**Resource limits, stated precisely.**
+
+- **The concurrency limit is per API process, not global.** It is an in-process semaphore; there is no distributed lock, because
+  coordinating one through Redis would add a dependency to the sign-in path for little gain. With `R` API replicas the worst case is
+  `2 x R` hashes running at once, and the aggregate transient memory is **about `R x 256 MiB`** (2 hashes x 128 MiB) on top of each
+  process's normal footprint. This is a sizing rule for operators, written into docker-compose.md when the
+  stack runs the API: the memory limit of an API container must cover the Node baseline plus 256 MiB for hashing, and capacity
+  planning multiplies by the replica count. The Redis rate limiter, by contrast, **is** shared across replicas, so the _rate_ of
+  attempts is bounded globally even though the _concurrency_ is bounded per process.
+- **Memory pressure is answered by queueing and scaling, never by weaker hashing.** If the host cannot afford 256 MiB per API
+  process, the remedies are to reduce `2` (more waiting and `503`s under load) or to add memory or replicas.
+- **Parameters read from storage are validated before use.** The cost parameters in a stored hash string are accepted only if they
+  lie inside an allowed range (N = 2^14 to 2^18, r = 8, p = 1 to 4, length 32); anything else fails the verification as if the
+  password were wrong and logs the version only. Without this, a corrupted or tampered row could make the process allocate
+  gigabytes. `maxmem` is the second line of defense.
+- **The approved parameters are pinned by a test.** A unit test asserts the current policy equals N = 2^17, r = 8, p = 1, 32-byte
+  output, 16-byte salt, `maxmem` 256 MiB and concurrency 2. Changing any value therefore fails CI and needs a deliberate edit with
+  review (and an ADR amendment for anything that lowers cost), so the parameters cannot be weakened silently.
+- **Upgrade on successful sign-in is unchanged** (table above): only a verified password is rehashed, and only toward the current
+  policy, never toward a cheaper one.
 
 **Secrets never reach logs or audit.** Request bodies are never logged. The shared logger already redacts
 `req.headers.authorization`, `req.headers.cookie`, `res.headers["set-cookie"]` and one-level `*.password`, `*.token`, `*.secret`,
@@ -211,16 +259,35 @@ principal's organizations)` in one query; no row means `404` whether the project
   | `project.create`                           |  yes  |  yes  |  yes   |   no   |
   | Every project permission, on every project |  yes  |  yes  |   no   |   no   |
 
-  Project-level roles (`project_admin`, `project_member`, `project_viewer` on `project_member`) grant, **only on that project**:
-  viewer: `project.read`; member: `project.read`; admin: `project.read`, `project.update`, `project.archive`,
-  `project.member.manage`. An organization `member` or `viewer` has **no access to a project they are not a member of**
-  (least privilege). The creator of a project becomes its `project_admin`. The effective permission set on a project is the
-  union of the organization role's and the project role's grants.
+  Project-level roles (`project_admin`, `project_member`, `project_viewer`, stored on `project_member` as an enum) grant,
+  **only on that project**: viewer: `project.read`; member: `project.read`; admin: `project.read`, `project.update`,
+  `project.archive`, `project.member.manage`. (`project_member` and `project_viewer` are separate roles now so they can diverge
+  when project content exists; today they hold the same permissions.)
 
+- **Project access policy (final decision 8), stated once.**
+  1. **Belonging to an organization gives no project access by itself.** An organization `member` or `viewer` can see and use only
+     the projects where they have an explicit `project_member` row.
+  2. **Organization `owner` and `admin` have implicit administrative access to every project of their organization**, with no
+     `project_member` row needed. Demoting them removes that access on the next request (nothing is cached).
+  3. **Project roles never elevate organization-level privileges.** A project role contributes only permissions scoped to
+     projects, and only on that project; it can never grant `organization.*`, `member.*`, `project.create` or ownership changes.
+  4. The effective permission set on a project is the union of what the organization role grants over projects and what the
+     project role grants on that project. The creator of a project becomes its `project_admin`.
+  5. **Visibility follows access.** A project the caller has no access to is answered with `404` (the same as a project of another
+     organization), and is absent from lists. A caller who has access but lacks the permission gets `403 forbidden`.
+- **Where that policy lives, so it cannot diverge.** The permission catalog tags every key with its scope (`organization` or
+  `project`), and the project role definitions are typed to accept **only project-scoped keys**, so point 3 is a compile-time
+  property, not a convention. The evaluation is **one pure function**, `permissionsFor(organizationRole, projectRole | null)`, in the
+  `organizations` domain layer behind `AuthorizationService`; no controller, service or repository decides access on its own. The
+  `projects` module supplies the caller's project role (it owns that data) and asks the service; it never re-implements the matrix.
+  Mandatory tests: (a) a table-driven test over **every** organization role x every project role (and none) x every permission
+  against one expected table; (b) a property test that, for every combination, the decision on an organization-scoped permission
+  equals the organization role's own decision (a project role never changes it); (c) each project endpoint exercised for owner,
+  admin, member with and without membership, viewer with and without membership, and a non-member of the organization.
 - **`AuthorizationService` is a policy execution boundary, not a business-logic service.** It evaluates "does this `TenantContext`
   (plus an optional project role) hold this permission" against the code-owned matrix and either returns or throws. It contains no
   rule about _how_ a domain object may change. Those stay in the owning domain: the last-owner invariant is an organizations
-  domain policy, "the project member must belong to the organization" and project-role rules are projects domain policies.
+  domain policy, "the project member must belong to the organization" and archive/restore rules are projects domain policies.
   Failure semantics: not a member of the organization = `404` (decision 4); a member lacking the permission = `403 forbidden`.
 - **Last-owner protection.** An organization always has at least one `owner`. Removing an owner, or changing an owner's role, is
   rejected if it would leave none. Because two concurrent demotions could each see "another owner exists", the check runs inside
@@ -236,7 +303,10 @@ principal's organizations)` in one query; no row means `404` whether the project
 - **Shape.** `security.audit_log`: `id`, `occurred_at` (UTC), `actor_user_id` (nullable), `organization_id` (nullable: sign-in events
   have none), `project_id` (nullable), `action`, `resource_type`, `resource_id`, `result` (`success`/`failure`), `correlation_id`
   (from `currentCorrelationId()`), `metadata` (jsonb). **No foreign keys:** a history must outlive and never block what it
-  describes, and this keeps `audit` a leaf. Indexed by (`organization_id`, `occurred_at`) and by `action`.
+  describes, and this keeps `audit` a leaf. Indexed by (`organization_id`, `occurred_at`, `id`), which is the key a future
+  organization-scoped, keyset-paginated reader needs, and by `action`. The reader itself is deferred (final decision 5): when it
+  arrives it adds an `audit.read` permission for `owner`/`admin` and a read-only `AuditReader`; nothing in the table or the writer
+  has to change, and nothing for it is built or exposed now.
 - **Typed events, no free-form payload.** `packages/contracts/src/audit.ts` lists every action with a strict zod schema for its
   `metadata` (ids, enum values, changed-field _names_; never user-entered text, credentials or tokens). `record()` accepts only a
   valid event. This is what makes decision 3's "no secrets in audit" structural.
@@ -244,12 +314,22 @@ principal's organizations)` in one query; no row means `404` whether the project
   transaction (`TransactionRunner`) and passes `tx` to both the change and the audit append. If the append fails, the change rolls
   back. Events that record a **refusal** rather than a state change (a failed sign-in, a throttle) have no business transaction;
   they are written in their own short transaction and a failure to write them is logged at error level without changing the response.
-- **Append-only, in three layers.** (1) The repository exposes `append` and nothing that updates or deletes; (2) no HTTP endpoint writes
-  or deletes audit records (and none reads them in Phase 2, see open question 5); (3) a database trigger raises on `UPDATE` and
-  `DELETE` of the table, shipped in the migration as hand-written SQL. Verified in a probe on Prisma 6.19.3: the trigger fires for
-  Prisma `updateMany`, `migrate dev` reports no drift with it present, and the fresh-database `migrate deploy` path applies it. It
-  is defense in depth, not a security boundary (a superuser can drop it); the boundary is a restricted production role, a later
-  hardening item. Retention or purging will need its own privileged, audited path and is out of scope.
+- **Append-only, in four layers** (the first two are application conventions, the last two are enforced by PostgreSQL):
+  1. The repository exposes `append` and nothing that updates or deletes.
+  2. No HTTP endpoint writes or deletes audit records, and none reads them in Phase 2 (final decision 5).
+  3. **Privileges.** The application's database role may `INSERT` (and `SELECT`, for the future reader and for tests) on the audit
+     table, and has **no** `UPDATE`, `DELETE`, `TRUNCATE` or `TRIGGER` privilege and does not own the table.
+  4. **Trigger.** A `BEFORE UPDATE OR DELETE` row trigger raises an exception, and a statement-level `BEFORE TRUNCATE` trigger does
+     the same, both shipped in the migration as hand-written SQL. Verified in a probe on Prisma 6.19.3 for the `UPDATE` trigger: it
+     fires for Prisma `updateMany`, `migrate dev` reports no drift with it present, and the fresh-database `migrate deploy` path
+     applies it. The `TRUNCATE` trigger was **not** probed and is verified by step 2.1's tests.
+
+  **The actual security boundary, stated plainly.** Layers 3 and 4 hold against ordinary application code, including a bug or an
+  injected statement running with the application's credentials. They do **not** hold against a **PostgreSQL superuser** (who can
+  drop or disable the trigger, set `session_replication_role = replica` or edit the table) or against the **owner of the table or
+  schema** (who can disable triggers, alter or drop the table, and grant privileges). Whoever holds those credentials is outside this
+  protection. The protection is therefore only as strong as the separation of credentials described next.
+
 - **Actions covered** (the catalog; more are added with their domain):
 
   | Area            | Actions                                                                                                                                                                       |
@@ -258,7 +338,7 @@ principal's organizations)` in one query; no row means `404` whether the project
   | Organizations   | `organization.created`, `organization.updated`                                                                                                                                |
   | Membership      | `membership.added`, `membership.removed`, `membership.role_changed`                                                                                                           |
   | Ownership       | `organization.owner_granted`, `organization.owner_revoked` (emitted in addition to `membership.role_changed` whenever `owner` is involved)                                    |
-  | Projects        | `project.created`, `project.updated`, `project.archived`, `project.restored` (see open question 1 on "deletion")                                                              |
+  | Projects        | `project.created`, `project.updated`, `project.archived`, `project.restored` (permanent deletion is deferred, final decision 1)                                               |
   | Project members | `project_member.added`, `project_member.removed`, `project_member.role_changed`                                                                                               |
 
   Role and permission _definitions_ are code (decision 5), so the runtime event is the role **assignment** (`membership.role_changed`,
@@ -266,8 +346,39 @@ principal's organizations)` in one query; no row means `404` whether the project
   are counted in Redis and logged at `warn` but not stored, so an attacker cannot grow the table with invented addresses; the
   per-account limiter bounds the rest. Audit retention is unbounded in Phase 2 and recorded as a limitation.
 
-- **Not building:** search, export, streaming, tamper-evident hashing chains, a configuration UI. This is one table, one recorder, one
-  trigger.
+- **Not building:** search, export, streaming, tamper-evident hashing chains, a configuration UI. This is one table, one recorder, two
+  triggers and a few grants.
+
+**Database credentials and privileges (kept minimal).** The requirements, which describe the production architecture:
+
+1. **The application's database credentials must not be a superuser**, must not hold `CREATEDB`, `CREATEROLE` or `BYPASSRLS`, and
+   must not own any schema or table.
+2. **Migration privileges are separate from application privileges.** A migration role owns the schemas and tables and is the only
+   one used by `prisma migrate deploy` (the `migrate` service or an operator); the API never runs with it.
+3. **Ordinary application code cannot alter or disable the audit triggers**: that needs ownership or superuser, which the
+   application role lacks (requirement 1).
+4. **The audit writer inserts but never updates or deletes**: `INSERT` and `SELECT` only (layer 3 above).
+
+The mechanism is deliberately small, with no privilege-management subsystem: **one `NOLOGIN` privilege role, `agentos_app`**, created
+idempotently by the first migration that needs it (guarded by `IF NOT EXISTS`; where the migration role may not create roles, the
+operator creates it first). **Each migration grants on its own tables**: `USAGE` on its schema, `SELECT/INSERT/UPDATE/DELETE` on
+ordinary tables and `SELECT/INSERT` only on the audit table. The API's real login role, with its password, is provisioned by the
+deployment and made a member of `agentos_app`. No role-handling code exists in the application, nothing grants at runtime, and
+there are no per-tenant database roles.
+
+**Tested without changing the development stack.** A step 2.1 integration test creates a throwaway login role that is a member of
+`agentos_app` in an isolated database, connects as it, and asserts: audit `INSERT`/`SELECT` succeed; `UPDATE`, `DELETE` and
+`TRUNCATE` on the audit table are denied; `ALTER TABLE ... DISABLE TRIGGER` is denied; creating a table in any domain schema is
+denied; ordinary tables work. (Roles are cluster-wide objects, so the test creates and drops its own login role and leaves
+`agentos_app` in place.)
+
+**Known limitation: the development configuration.** The Compose PostgreSQL has one superuser, and both the `api` and `migrate`
+services connect with it through the same `DATABASE_URL`. In the development stack and in CI the API therefore runs as a superuser,
+the grants and triggers above are **not** exercised end to end, and RLS could not work either. This is a limitation of the
+**development configuration, not production architecture**; such a configuration must not be deployed. Splitting the credentials in
+Compose (a separate connection setting for `migrate`, a provisioned non-superuser login role for `api`, and the matching changes to
+`check:env`, CI and the system tests) is deferred to the production-hardening work unless the review pulls it into Phase 2. Phase 2
+ships the grants and their test so that doing the split later is a change of credentials, not a redesign.
 
 ### 7. Prisma and the database (verified against the repository)
 
@@ -324,6 +435,12 @@ GET|PATCH /projects/:projectId        POST /projects/:projectId/archive   POST /
 GET    /projects/:projectId/members   POST /projects/:projectId/members   PATCH|DELETE .../members/:userId
 ```
 
+**Archive and restore replace deletion** (final decision 1). Archiving sets `status = archived` and is reversible; there is no
+`DELETE /projects/:projectId`, no `project.deleted` audit action and no cascade. An archived project is left out of default lists
+(`status` filter to include it), accepts no updates and no new members, and can only be restored; both transitions need the
+`project.archive` permission (project admins and organization owners/admins) and are audited. Permanent deletion needs a retention
+policy and a rule for dependent data (agents, executions, usage) that does not exist yet; adding it later is a new decision.
+
 `/projects` keeps the paths of spec §7.3 and carries the organization as an explicit selector, validated per decision 4.1.
 Secrets are never in a response other than the single sign-in response (token delivery) and the password-change response; an email
 address is returned only to members of a shared organization.
@@ -348,7 +465,8 @@ address is returned only to members of a shared organization.
 | 2.3  | `projects`: projects, members, project roles, cross-organization isolation test matrix                                                                                                                         |
 | 2.4  | Web slice, system-test scenario (register, sign in, create organization and project through the real stack), documentation, ADR finalization                                                                   |
 
-Each step ends with `pnpm verify`, `pnpm test:integration` and, for 2.4, `pnpm test:system`, and is reviewed before the next begins.
+Each step ends with `pnpm verify`, `pnpm test:integration` and, for 2.4, `pnpm test:system`. **Each step is reviewed and explicitly
+approved before the next one begins** (final decision 9); finishing a step never starts the following one.
 Amendments to backend.md (repository ports in `application/`, the request-scoped principal, the global guard in the composition
 root, the structured `AuditRecorder` replacing the `record('agent.created', id, tx)` sketch, logger redaction paths) are made in the
 step that proves them.
@@ -360,7 +478,9 @@ step that proves them.
 - Sessions in PostgreSQL add one indexed read per authenticated request (cacheable in Redis later without changing the contract).
 - Local passwords make AgentOS responsible for credential storage until OIDC exists; mitigated by scrypt, rate limiting, generic
   errors, hashing concurrency limits, registration closed by default and the documented seam.
-- scrypt at 128 MiB needs memory headroom and limits sign-in throughput (about two concurrent hashes per API process).
+- scrypt at 128 MiB needs memory headroom and limits sign-in throughput: two concurrent hashes **per API process**, so aggregate
+  memory is about 256 MiB times the number of replicas (decision 3).
+- Sign-in depends on Redis (the rate limiter) and stops during a Redis outage, while existing sessions keep working.
 - Application-enforced tenancy means a missing scope is a data leak; the mitigation is structural (required `OrganizationScope`,
   fail-closed repositories, the mandatory cross-organization and route-metadata tests), not a promise.
 - Code-owned roles make permission changes a deployment, and custom roles a later schema change; in exchange there is no
@@ -381,42 +501,43 @@ step that proves them.
 - **A Prisma client per domain:** rejected: no technical need, and it would split transactions (decision 7).
 - **Foreign keys from `audit_log`:** rejected; see decision 6.
 
-## Decisions requiring approval (remaining open questions)
+## Open questions
 
-1. **"Project deletion".** The audit requirement lists project creation and deletion; this draft has archive/restore, not deletion.
-   Recommendation: archive and restore only (`project.archived`/`project.restored`); hard deletion waits until the first child
-   data (agents, executions) forces a retention and cascade design. If review wants deletion now, say so and `project.deleted` is added.
-2. **Who may create an organization.** Recommendation: any authenticated user (the registration gate already decides who can exist).
-3. **How a second user appears on a closed instance.** With registration closed and no invitations, additional users need an operator
-   to enable `AUTH_ALLOW_REGISTRATION`. Recommendation: accept and document this limitation; admin-provisioned accounts and invitations
-   are a later phase.
-4. **Sign-in when Redis is down.** Recommendation: fail closed (decision 2). The alternative is an in-process limiter fallback.
-5. **A read endpoint for the audit log.** Recommendation: not in Phase 2 (verified through integration tests and SQL); the first reader
-   is a later phase.
-6. **The append-only trigger.** Recommendation: include it (verified in the probe); the alternative is application-level only.
-7. **Roles as an enum with a code-owned matrix** (decision 5), deferring the spec's `Role`/`Permission`/`RolePermission` entities.
-8. **Project roles** `project_admin`/`project_member`/`project_viewer`, and organization members having no default access to projects
-   they do not belong to.
-9. The four-step plan and its review gates (decision 10).
+None. The nine questions of revision 2 are resolved and recorded under "Approved decisions".
+
+**Points to confirm during implementation** (not open architecture questions; each is verified or reported in the step named):
+
+- The `BEFORE TRUNCATE` trigger and the role-privilege test (decision 6), step 2.1.
+- The memory limit of the API container against the 256 MiB hashing budget per replica (decision 3), documented in step 2.1 and
+  revisited if the stack is deployed with several replicas.
+- Whether the production credential split should be pulled into Phase 2 or stay in the hardening work (decision 6, last
+  paragraph). The default in this ADR is to defer it.
 
 ## Conflicts with the existing architecture and repository
 
-| Where                                  | Conflict or gap                                                                                                                                                   | Resolution proposed                                                                                       |
-| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Spec §6.2 (conceptual ERD)             | `Role`, `Permission`, `RolePermission` entities.                                                                                                                  | Deferred with custom roles (decision 5, open question 7). §6.3 states the ERD is conceptual.              |
-| Spec §6.1 / §6.2                       | The audit table belongs to "Observability & Security"; the logical schema list has `security`.                                                                    | `audit_log` in schema `security`, owned by `audit` (decision 7).                                          |
-| Spec §7.3                              | `/projects` has no organization segment.                                                                                                                          | Organization as a validated selector (decision 4.1, 8).                                                   |
-| ESLint layer rules                     | The domain layer may not import `modules/database`; the application layer may (not `PrismaService`). A port carrying `db: DatabaseClient` cannot be in `domain/`. | Ports in `application/`; domain stays pure (decision 1). Amend backend.md in step 2.1.                    |
-| backend.md checklist                   | "Do not register global providers" (aimed at domain modules); the composition root already registers `APP_PIPE`/`APP_FILTER`.                                     | `APP_GUARD` in `AppModule`; wording clarified in step 2.1.                                                |
-| backend.md audit sketch                | `this.audit.record('agent.created', agent.id, tx)` is untyped.                                                                                                    | Structured, typed events (decision 6); update the sketch in step 2.1.                                     |
-| `packages/logger`                      | Redaction wildcards match one level only; no `currentPassword`/`newPassword`/`passwordHash`/`sessionToken`.                                                       | Add the paths and a test (decision 3).                                                                    |
-| Compose development database role      | PostgreSQL superuser: bypasses RLS and any privilege-based audit protection.                                                                                      | Recorded as a limitation; restricted API role is a later hardening item (decisions 4.5, 6).               |
-| `base.prisma`                          | Datasource has no `schemas` list; the comment predicts one file per domain.                                                                                       | `schemas` added in step 2.1; file-per-module layout matches the comment.                                  |
-| CLAUDE.md "Redis is cache / ephemeral" | Rate-limit counters.                                                                                                                                              | Compliant: counters are ephemeral and not the source of truth for anything (sessions stay in PostgreSQL). |
-| Worker                                 | None: no job and no database access are needed in Phase 2.                                                                                                        | No change.                                                                                                |
+| Where                                  | Conflict or gap                                                                                                                                                   | Resolution proposed                                                                                                                                                                         |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Spec §6.2 (conceptual ERD)             | `Role`, `Permission`, `RolePermission` entities.                                                                                                                  | Deferred with custom roles (decision 5, final decision 7). §6.3 states the ERD is conceptual.                                                                                               |
+| Spec §6.1 / §6.2                       | The audit table belongs to "Observability & Security"; the logical schema list has `security`.                                                                    | `audit_log` in schema `security`, owned by `audit` (decision 7).                                                                                                                            |
+| Spec §7.3                              | `/projects` has no organization segment.                                                                                                                          | Organization as a validated selector (decision 4.1, 8).                                                                                                                                     |
+| ESLint layer rules                     | The domain layer may not import `modules/database`; the application layer may (not `PrismaService`). A port carrying `db: DatabaseClient` cannot be in `domain/`. | Ports in `application/`; domain stays pure (decision 1). Amend backend.md in step 2.1.                                                                                                      |
+| backend.md checklist                   | "Do not register global providers" (aimed at domain modules); the composition root already registers `APP_PIPE`/`APP_FILTER`.                                     | `APP_GUARD` in `AppModule`; wording clarified in step 2.1.                                                                                                                                  |
+| backend.md audit sketch                | `this.audit.record('agent.created', agent.id, tx)` is untyped.                                                                                                    | Structured, typed events (decision 6); update the sketch in step 2.1.                                                                                                                       |
+| `packages/logger`                      | Redaction wildcards match one level only; no `currentPassword`/`newPassword`/`passwordHash`/`sessionToken`.                                                       | Add the paths and a test (decision 3).                                                                                                                                                      |
+| Compose development database role      | Single PostgreSQL superuser shared by `api` and `migrate`: bypasses RLS, grants and the audit triggers.                                                           | Recorded as a development-configuration limitation, not production architecture; grants and a role-privilege test ship in 2.1, the Compose credential split is deferred (decisions 4.5, 6). |
+| `base.prisma`                          | Datasource has no `schemas` list; the comment predicts one file per domain.                                                                                       | `schemas` added in step 2.1; file-per-module layout matches the comment.                                                                                                                    |
+| CLAUDE.md "Redis is cache / ephemeral" | Rate-limit counters.                                                                                                                                              | Compliant: counters are ephemeral and not the source of truth for anything (sessions stay in PostgreSQL).                                                                                   |
+| Worker                                 | None: no job and no database access are needed in Phase 2.                                                                                                        | No change.                                                                                                                                                                                  |
 
 ## Known limitations (accepted for Phase 2)
 
-No password reset, email verification, MFA, invitations or recovery path (decision 3); no pepper; audit retention unbounded and
-unread through the API; RLS absent and untestable with the development superuser; scrypt memory and concurrency cost; one session
-token format for browsers and API clients, so an API client that stores its token carelessly bears that risk.
+- No password reset, email verification, MFA, invitations or recovery path (decision 3); no pepper.
+- **Adding users to a closed instance needs an operator** to enable registration and restart the API, and while it is enabled anyone
+  who can reach the API can register (decision 2).
+- **Development database configuration:** one PostgreSQL superuser for `api` and `migrate`; grants, the audit triggers and RLS are
+  not exercised end to end in the Compose stack or CI, and the audit protection does not hold against a superuser or a schema owner
+  (decision 6). Not a production architecture; must not be deployed.
+- Audit retention is unbounded and the log is not readable through the API; no permanent project deletion.
+- scrypt memory and concurrency cost: 256 MiB of hashing budget per API process, so memory scales with replicas (decision 3).
+- One session token format for browsers and API clients, so an API client that stores its token carelessly bears that risk.
+- Tenant isolation is application-enforced; RLS is absent (decision 4.5).
