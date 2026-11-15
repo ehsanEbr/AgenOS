@@ -59,4 +59,6 @@ export const ORGANIZATION_ERROR_CODES = {
   alreadyMember: 'already_member',
   /** The change would leave the organization without an owner. */
   lastOwner: 'last_owner',
+  /** The membership still has dependents (project memberships) that no registered participant removed. Fails closed; nothing changed. */
+  membershipInUse: 'membership_in_use',
 } as const;

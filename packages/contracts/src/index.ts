@@ -7,3 +7,4 @@ export * from './organizations';
 export * from './pagination';
 export * from './permissions';
 export * from './primitives';
+export * from './projects';
