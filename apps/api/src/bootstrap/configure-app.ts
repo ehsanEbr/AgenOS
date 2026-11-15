@@ -12,8 +12,14 @@ export const API_PREFIX = 'api/v1';
  * exception filter are registered in AppModule so every test module gets them too.
  * Shared by main.ts and the e2e tests so tests exercise the production pipeline.
  */
-export function configureApp(app: INestApplication, config: Pick<ApiConfig, 'CORS_ORIGINS'>): void {
+export function configureApp(
+  app: INestApplication,
+  config: Pick<ApiConfig, 'CORS_ORIGINS'> & Partial<Pick<ApiConfig, 'TRUST_PROXY_HOPS'>>,
+): void {
   app.useLogger(app.get(Logger));
+  // The client address (rate limiting) is only trustworthy if Express knows how many proxies sit in front of the API.
+  if (config.TRUST_PROXY_HOPS !== undefined)
+    app.getHttpAdapter().getInstance().set('trust proxy', config.TRUST_PROXY_HOPS);
   app.use(correlationIdMiddleware);
   app.setGlobalPrefix(API_PREFIX);
   app.enableCors({ origin: config.CORS_ORIGINS, exposedHeaders: [CORRELATION_ID_HEADER] });
@@ -25,6 +31,8 @@ export function configureApp(app: INestApplication, config: Pick<ApiConfig, 'COR
       .setDescription('AgentOS platform API')
       .setVersion('1.0')
       .setOpenAPIVersion('3.1.0')
+      .addBearerAuth()
+      .addCookieAuth('agentos_session')
       .build(),
   );
   SwaggerModule.setup('api/docs', app, document, { jsonDocumentUrl: 'api/openapi.json' });

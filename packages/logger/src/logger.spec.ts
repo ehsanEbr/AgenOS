@@ -32,6 +32,32 @@ describe('logger conventions', () => {
     expect(out).toContain('[REDACTED]');
   });
 
+  it('redacts the credentials authentication code handles, whatever name they travel under', () => {
+    const { lines, logger } = capture();
+    logger.info(
+      {
+        body: { currentPassword: 'old-pw-1', newPassword: 'new-pw-2', password: 'pw-3' },
+        user: { passwordHash: '$scrypt$v=1$secret-hash' },
+        auth: { sessionToken: 'session-tok-4', credential: 'cred-5' },
+        res: { headers: { 'set-cookie': ['agentos_session=cookie-secret-6'] } },
+        req: { headers: { cookie: 'agentos_session=cookie-secret-7' } },
+      },
+      'x',
+    );
+    const out = JSON.stringify(lines[0]);
+    for (const secret of [
+      'old-pw-1',
+      'new-pw-2',
+      'pw-3',
+      'secret-hash',
+      'session-tok-4',
+      'cred-5',
+      'cookie-secret-6',
+      'cookie-secret-7',
+    ])
+      expect(out).not.toContain(secret);
+  });
+
   it('exposes the redaction paths for processes that build their own pino options', () => {
     expect(REDACT_PATHS).toContain('req.headers.authorization');
   });

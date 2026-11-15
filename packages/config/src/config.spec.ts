@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   ConfigError,
+  booleanSchema,
   csvSchema,
   logLevelSchema,
   nodeEnvSchema,
@@ -58,5 +59,17 @@ describe('redactUrl', () => {
 
   it('does not echo input it cannot parse', () => {
     expect(redactUrl('not a url with hunter2')).toBe('(invalid url)');
+  });
+});
+
+describe('booleanSchema', () => {
+  it('accepts exactly "true" and "false"', () => {
+    expect(booleanSchema.parse('true')).toBe(true);
+    expect(booleanSchema.parse('false')).toBe(false);
+  });
+
+  it('rejects anything else, so a typo cannot silently mean "off" or "on"', () => {
+    for (const value of ['ture', 'TRUE', '1', '0', 'yes', '', ' true'])
+      expect(booleanSchema.safeParse(value).success, JSON.stringify(value)).toBe(false);
   });
 });

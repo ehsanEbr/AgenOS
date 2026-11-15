@@ -122,4 +122,5 @@ export const IDENTITY_ERROR_CODES = {
   tooManyAttempts: 'too_many_attempts',
   serviceUnavailable: 'authentication_unavailable',
   originNotAllowed: 'origin_not_allowed',
+  invalidCurrentPassword: 'invalid_current_password',
 } as const;

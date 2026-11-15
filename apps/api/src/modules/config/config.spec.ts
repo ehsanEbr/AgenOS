@@ -68,3 +68,46 @@ describe('loadApiConfig', () => {
     }
   });
 });
+
+describe('authentication settings', () => {
+  it('are closed and conservative by default', () => {
+    expect(loadApiConfig(infra)).toMatchObject({
+      WEB_ORIGIN: 'http://localhost:5173',
+      AUTH_ALLOW_REGISTRATION: false,
+      AUTH_ALLOW_INSECURE_ORIGIN: false,
+      SESSION_IDLE_TTL_MINUTES: 1440,
+      SESSION_ABSOLUTE_TTL_HOURS: 336,
+      TRUST_PROXY_HOPS: 0,
+    });
+  });
+
+  it('only accept the exact words true and false for the switches (a typo must not mean "on")', () => {
+    expect(loadApiConfig({ ...infra, AUTH_ALLOW_REGISTRATION: 'true' }).AUTH_ALLOW_REGISTRATION).toBe(true);
+    expect(() => loadApiConfig({ ...infra, AUTH_ALLOW_REGISTRATION: 'ture' })).toThrow(
+      /AUTH_ALLOW_REGISTRATION/,
+    );
+    expect(() => loadApiConfig({ ...infra, AUTH_ALLOW_REGISTRATION: '1' })).toThrow(
+      /AUTH_ALLOW_REGISTRATION/,
+    );
+  });
+
+  it('normalize WEB_ORIGIN to an origin and refuse plain http away from localhost', () => {
+    expect(loadApiConfig({ ...infra, WEB_ORIGIN: 'https://app.example.com/some/path' }).WEB_ORIGIN).toBe(
+      'https://app.example.com',
+    );
+    expect(loadApiConfig({ ...infra, WEB_ORIGIN: 'http://127.0.0.1:8080' }).WEB_ORIGIN).toBe(
+      'http://127.0.0.1:8080',
+    );
+    expect(() => loadApiConfig({ ...infra, WEB_ORIGIN: 'http://app.example.com' })).toThrow(/WEB_ORIGIN/);
+    expect(
+      loadApiConfig({ ...infra, WEB_ORIGIN: 'http://app.example.com', AUTH_ALLOW_INSECURE_ORIGIN: 'true' })
+        .WEB_ORIGIN,
+    ).toBe('http://app.example.com');
+  });
+
+  it('refuse an absolute session lifetime shorter than the idle lifetime', () => {
+    expect(() =>
+      loadApiConfig({ ...infra, SESSION_IDLE_TTL_MINUTES: '600', SESSION_ABSOLUTE_TTL_HOURS: '1' }),
+    ).toThrow(/SESSION_ABSOLUTE_TTL_HOURS/);
+  });
+});

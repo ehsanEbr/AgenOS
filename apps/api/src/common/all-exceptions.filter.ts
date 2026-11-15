@@ -1,6 +1,7 @@
 import { ArgumentsHost, Catch, ExceptionFilter, Logger } from '@nestjs/common';
 import type { Response } from 'express';
 import { classifyError, toApiError } from './api-error';
+import { AppError } from './app-error';
 import { type CorrelatedRequest, getCorrelationId } from './correlation-id.middleware';
 
 /**
@@ -32,6 +33,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
     } else if (status >= 500) {
       this.logger.warn({ code: body.code, status }, `Request failed: ${body.message}`);
     }
+
+    if (exception instanceof AppError && exception.retryAfterSeconds !== undefined)
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil(exception.retryAfterSeconds))));
 
     res.status(status).json(body);
   }

@@ -14,6 +14,7 @@ import {
   TransactionRunner,
 } from '../src/modules/database';
 import { type IsolatedDatabase, adminDatabaseUrl, createIsolatedDatabase } from './support/isolated-database';
+import { Public } from '../src/modules/identity';
 
 // Requires the Docker Compose stack: `pnpm setup:env && pnpm infra:up`.
 // Table-creating tests run in a throwaway database (see support/isolated-database.ts), never in the dev database.
@@ -105,6 +106,8 @@ describe('transactions (integration: real PostgreSQL, throwaway database)', () =
 });
 
 describe('error handling and lifecycle (integration)', () => {
+  // A test fixture for the HTTP pipeline, not for authentication: public on purpose (default-deny is tested in identity.e2e.spec.ts).
+  @Public()
   @Controller('test-db')
   class DatabaseProbeController {
     constructor(private readonly prisma: PrismaService) {}
