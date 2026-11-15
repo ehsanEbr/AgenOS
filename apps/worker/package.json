@@ -1,0 +1,45 @@
+{
+  "name": "@agentos/worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch --env-file-if-exists=../../.env src/main.ts",
+    "start": "node --env-file-if-exists=../../.env dist/main.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && node ../../tools/check-module-boundaries.mjs src",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
+  },
+  "nx": {
+    "tags": [
+      "type:app",
+      "scope:backend"
+    ],
+    "targets": {
+      "test:integration": {
+        "dependsOn": [
+          "^build",
+          "build"
+        ],
+        "cache": false
+      }
+    }
+  },
+  "dependencies": {
+    "@agentos/config": "workspace:*",
+    "@agentos/contracts": "workspace:*",
+    "@agentos/logger": "workspace:*",
+    "@agentos/queue": "workspace:*",
+    "bullmq": "5.76.3",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "pino": "^9.14.0",
+    "pino-pretty": "^13.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.8.3",
+    "vitest": "^3.2.0"
+  }
+}

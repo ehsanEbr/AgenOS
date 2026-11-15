@@ -12,12 +12,27 @@ export default defineConfig({
   },
   build: {
     sourcemap: true,
-    chunkSizeWarningLimit: 700, // antd is split into its own chunk (~600 kB)
+    // The UI library is the bulk of the initial download; see docs/architecture/frontend.md ("Performance").
+    chunkSizeWarningLimit: 900,
     rollupOptions: {
       output: {
-        manualChunks: {
-          antd: ['antd', '@ant-design/icons'],
-          react: ['react', 'react-dom', 'react-router-dom'],
+        // Vendor code is split by package family so it caches independently of application code. The function form
+        // matters: the object form would also drag every dependency of antd (including react-dom) into the antd chunk.
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return undefined;
+          if (
+            /node_modules\/(?:\.pnpm\/[^/]+\/node_modules\/)?(react|react-dom|react-router|scheduler)\//.test(
+              id,
+            )
+          )
+            return 'react';
+          if (
+            /node_modules\/(?:\.pnpm\/[^/]+\/node_modules\/)?(antd|@ant-design|@rc-component|rc-[\w-]+)\//.test(
+              id,
+            )
+          )
+            return 'antd';
+          return undefined;
         },
       },
     },

@@ -1,0 +1,40 @@
+name: Windows
+
+# Developers use Windows, and path / line-ending / shell differences only show up there. GitHub's Windows runners cannot run
+# Linux containers, so this covers what does not need Docker: install, format, lint, architecture checks, typecheck, unit tests
+# and build. Redis/PostgreSQL integration, real POSIX signals and the Docker system tests are Linux-only (see ci.yml and
+# docs/architecture/ci.md). Kept separate so a Windows-only problem is visible as such.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NX_NO_CLOUD: 'true'
+
+jobs:
+  windows:
+    name: Windows portability
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm check:architecture
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build

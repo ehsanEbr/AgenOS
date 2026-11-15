@@ -1,22 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { REDACT_PATHS } from '@agentos/logger';
 import type { Options } from 'pino-http';
 import { getCorrelationId } from './correlation-id.middleware';
 import { currentCorrelationId } from './request-context';
-
-/**
- * Paths redacted from every log line (spec section 12.3: never log credentials).
- * Redaction is a safety net for accidents, not a license to log secrets: request/response bodies and headers are
- * never logged in the first place (see the serializers below).
- */
-export const REDACT_PATHS = [
-  'req.headers.authorization',
-  'req.headers.cookie',
-  'res.headers["set-cookie"]',
-  '*.password',
-  '*.apiKey',
-  '*.secret',
-  '*.token',
-];
 
 /**
  * Structured logging contract for the API. Every line is JSON with:

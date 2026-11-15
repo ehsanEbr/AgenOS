@@ -1,0 +1,22 @@
+# Build context for infrastructure/docker/Dockerfile. Keep secrets, dependencies and build output OUT of images.
+
+# Secrets: never enter a build context.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Installed/built on the image, never copied from the host (host node_modules are for another OS).
+**/node_modules
+**/dist
+**/coverage
+**/.nx
+**/*.tsbuildinfo
+
+# Not needed to build or run the applications.
+.git
+.github
+docs
+infrastructure/compose
+**/*.md

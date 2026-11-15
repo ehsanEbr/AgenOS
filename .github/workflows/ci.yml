@@ -1,64 +1,117 @@
 name: CI
 
+# Linux is the authoritative environment: signals, Docker and the system tests only exist here. Windows portability is checked by
+# the separate "Windows" workflow. Everything below calls root package scripts / Nx targets: the same commands as local development.
+
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NX_NO_CLOUD: 'true'
 
 jobs:
   verify:
+    name: Static checks, unit tests, build
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    env:
-      NX_NO_CLOUD: 'true'
-
     steps:
       - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
 
-      - uses: pnpm/action-setup@v6 # version is read from "packageManager" in package.json
-
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      # Generates .env with random throwaway passwords (the same path developers use locally).
+      # Generates .env with random throwaway passwords (the same path developers use). The generated values are masked in logs.
       - name: Prepare environment
         run: pnpm setup:env
 
-      - name: Validate Docker Compose configuration
-        run: pnpm infra:config
+      - name: Validate Docker Compose configuration (infrastructure and full stack)
+        run: |
+          pnpm infra:config
+          pnpm stack:config
 
       - run: pnpm format:check
       - run: pnpm lint
-      - name: Architecture checks (module boundaries + their tests)
+      - name: Architecture, dependency boundary and environment checks
         run: pnpm check:architecture
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
 
-      # Start the real infrastructure from the same compose file developers use.
+  integration:
+    name: Integration tests (real PostgreSQL + Redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - name: Prepare environment
+        run: pnpm setup:env
+
+      # The same Compose file developers use. Integration tests only touch throwaway databases / prefixed keys in logical
+      # database 15 of this freshly created CI instance, never a developer or production database.
       - name: Start PostgreSQL and Redis
         run: pnpm infra:up
 
-      - name: Validate Prisma schema and apply migrations
+      - name: Validate the Prisma schema and apply migrations
         run: |
           pnpm db:validate
           pnpm db:deploy
 
-      - name: Integration tests (real PostgreSQL + Redis)
+      # Nx builds what the tests need first (the worker process tests run the built dist).
+      - name: Integration tests
         run: pnpm test:integration
 
       - name: Infrastructure logs (on failure)
         if: failure()
         run: docker compose --env-file .env -f infrastructure/compose/docker-compose.yml logs --no-color --tail=200
-
       - name: Stop infrastructure
         if: always()
         run: pnpm infra:down
+
+  system:
+    name: System tests (full Docker Compose stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      # Builds the web/api/worker images, then drives throwaway Compose projects (own volumes, network, ports and generated
+      # credentials; see tests/system/src/stack.ts). No .env and no secret is involved.
+      - name: System tests
+        run: pnpm test:system
+      - name: Docker state (on failure)
+        if: failure()
+        run: |
+          docker ps -a --format 'table {{.Names}}\t{{.Status}}'
+          docker volume ls --format '{{.Name}}' | grep agentos-systest || true
+      # Throwaway projects remove themselves; this is a safety net for an aborted run, limited to the test prefix.
+      - name: Remove leftover system-test projects
+        if: always()
+        run: |
+          ids=$(docker ps -aq --filter "label=com.docker.compose.project" | xargs -r docker inspect --format '{{.Id}} {{index .Config.Labels "com.docker.compose.project"}}' | awk '$2 ~ /^agentos-systest-/ {print $1}')
+          [ -z "$ids" ] || echo "$ids" | xargs docker rm -f
+
+  # One status to require in branch protection. It FAILS unless every required job succeeded: a skipped, cancelled or failed
+  # job can never produce a green result.
+  ci-result:
+    name: CI result
+    if: always()
+    needs: [verify, integration, system]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every job to have succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "job results: $RESULTS"
+          for result in $RESULTS; do
+            [ "$result" = "success" ] || { echo "::error::a required job did not succeed ($result)"; exit 1; }
+          done

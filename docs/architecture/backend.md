@@ -329,7 +329,7 @@ development detail.
 
 - Infrastructure modules are **leaves**: they depend on `config` and `common/` only, never on a domain or on each other **[enforced]**.
 - Business modules reach infrastructure only through the exported providers (`TransactionRunner`, repositories built on `PrismaService`, `RedisService`).
-- **Shutdown** is driven by `app.enableShutdownHooks()`; cleanup is idempotent (the second call returns the first call's promise), so a
+- **Shutdown** is driven by `app.close()`, which `main.ts` calls on SIGTERM/SIGINT and then exits 0 (Nest's `enableShutdownHooks()` is deliberately not used: it re-raises the signal, so the process would exit 143 instead of 0); cleanup is idempotent (the second call returns the first call's promise), so a
   signal followed by a manual `close()` cannot double-close or throw. Tested.
 - **Required vs optional.** `health.service.ts` declares every dependency in `DEPENDENCIES` with an explicit `required`
   flag; only required ones can make the API `not_ready`. A new dependency is added there deliberately. Both current

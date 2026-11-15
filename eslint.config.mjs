@@ -20,7 +20,7 @@ const DEEP_IMPORT = {
 // Only workspace *packages* are importable; applications (api, web, any future worker or scheduler) never are.
 // This is an allowlist so a new app cannot be imported by accident. Adding a shared package means adding it
 // here, which is deliberate friction (spec: extract shared code only with multiple consumers).
-const IMPORTABLE_WORKSPACE_PACKAGES = ['contracts'];
+const IMPORTABLE_WORKSPACE_PACKAGES = ['contracts', 'config', 'logger', 'queue'];
 const NO_APP_IMPORT = {
   group: ['@agentos/*', ...IMPORTABLE_WORKSPACE_PACKAGES.map((name) => `!@agentos/${name}`)],
   message: 'Applications cannot be imported. Share code through a package (e.g. @agentos/contracts).',
@@ -55,6 +55,41 @@ const WEB_FORBIDDEN = {
 };
 
 // ---------------------------------------------------------------------------------------------------------
+// apps/web: layers   app -> features -> shared   (arrows mean "may import")
+// ---------------------------------------------------------------------------------------------------------
+
+// `react-router-dom` is the legacy re-export package; import from `react-router`.
+const NO_ROUTER_DOM = {
+  group: ['react-router-dom'],
+  message: 'Import from "react-router" (react-router-dom is the legacy package).',
+};
+// shared/ is the bottom layer: it knows nothing about features or the app shell.
+const SHARED_NO_UPWARD = {
+  regex: '(^|/)(features|app)(/|$)',
+  message:
+    'shared/ must not import from features/ or app/. Shared code cannot depend on the things that depend on it.',
+};
+// features/ may use shared/, never the app layer.
+const FEATURE_NO_APP = {
+  regex: '(^|/)app(/|$)',
+  message: 'features/ must not import from app/. The app composes features, not the other way round.',
+};
+// The app layer reaches a feature only through its public index.ts (never "features/x/components/...").
+const APP_FEATURE_PUBLIC_ONLY = {
+  regex: '(^|/)features/[^/]+/(?!index$).+',
+  message: 'Import a feature through its public entry (features/<name>), not its internal files.',
+};
+const NO_DIRECT_FETCH = {
+  name: 'fetch',
+  message:
+    'Do not call fetch directly. Use apiRequest from shared/api/client (timeouts, cancellation, contract validation).',
+};
+const NO_IMPORT_META_ENV = {
+  selector: "MemberExpression[object.type='MetaProperty'][property.name='env']",
+  message: 'Read configuration through "env" from shared/config/env. Only that file touches import.meta.env.',
+};
+
+// ---------------------------------------------------------------------------------------------------------
 // apps/api: module boundaries
 // ---------------------------------------------------------------------------------------------------------
 
@@ -74,8 +109,56 @@ const PRISMA_RESTRICTED = {
     "Prisma may only be imported in modules/database and in a domain module's infrastructure layer (repositories).",
 };
 const IOREDIS_RESTRICTED = {
+  group: ['ioredis', 'ioredis/*', 'bullmq', 'bullmq/*'],
+  message:
+    'ioredis may only be imported inside apps/api/src/modules/redis, and the API never imports bullmq (it produces jobs through @agentos/queue).',
+};
+// Same rule for the redis module itself, which may use ioredis but still not BullMQ.
+const BULLMQ_NOT_IN_API = {
+  group: ['bullmq', 'bullmq/*'],
+  message: 'The API produces jobs through @agentos/queue and never imports bullmq directly.',
+};
+
+// ---------------------------------------------------------------------------------------------------------
+// apps/worker: runtime (framework-free worker host) and processors (the jobs it runs). docs/architecture/workers.md
+// ---------------------------------------------------------------------------------------------------------
+
+const WORKER_FORBIDDEN = {
+  group: ['@nestjs/*', 'express', '@prisma/*', 'prisma', 'prisma/*', 'react', 'react-*', 'antd', 'pg'],
+  message:
+    'The worker is framework-free and has no database access: no NestJS, HTTP framework or Prisma. If a job needs the database, stop and write an ADR first.',
+};
+// A worker is a separate deployable: it never reaches into another application's sources by path either.
+const NO_OTHER_APP_SOURCES = {
+  group: ['**/apps/api/**', '**/apps/web/**'],
+  message:
+    'Applications do not import each other. Share code through a package (@agentos/contracts, @agentos/queue).',
+};
+const WORKER_BULLMQ_ONLY_IN_RUNTIME = {
+  group: ['bullmq', 'bullmq/*', 'ioredis', 'ioredis/*'],
+  message:
+    'BullMQ and ioredis are confined to apps/worker/src/runtime (and packages/queue). Processors receive plain typed payloads and a JobContext.',
+};
+const WORKER_IORED_NOT_IN_RUNTIME = {
   group: ['ioredis', 'ioredis/*'],
-  message: 'ioredis may only be imported inside apps/api/src/modules/redis.',
+  message:
+    'Create Redis connections with createRedisConnection from @agentos/queue; ioredis is confined to packages/queue.',
+};
+// The runtime is generic and reusable: it must not know the process entry, the environment, or any concrete job.
+const RUNTIME_NO_UPWARD = {
+  regex: '^\\.\\./(processors|app|main|run|config|health|healthcheck)(/|$)',
+  message:
+    'The worker runtime is generic: it must not import processors, config, app or main. Processors and configuration are handed in (see WorkerHostOptions).',
+};
+// Processors use the runtime only through its public API.
+const PROCESSORS_RUNTIME_PUBLIC_ONLY = {
+  regex: '^\\.\\./runtime/.+',
+  message: 'Import the runtime through its public entry ("../runtime"), not its internal files.',
+};
+const PROCESSORS_NO_ENTRY = {
+  regex: '^\\.\\./(app|main|run|config|health|healthcheck)(/|$)',
+  message:
+    'Processors must not import the process entry or configuration. They receive everything through their JobContext.',
 };
 
 // Infrastructure modules (config, database, redis) are leaves: they never depend on business or sibling modules,
@@ -103,6 +186,7 @@ const FRAMEWORK_AND_DRIVERS = [
   '@prisma/*',
   'prisma',
   'ioredis',
+  'bullmq',
 ];
 const importsLayer = (...layers) => ({
   regex: `(^|/)(${layers.join('|')})(/|$)`,
@@ -124,7 +208,7 @@ const APPLICATION_NO_DRIVER_ACCESS = {
     'Application services use repositories and TransactionRunner, never PrismaService/RedisService directly.',
 };
 const NO_DRIVERS = {
-  group: ['@prisma/*', 'prisma', 'ioredis', 'express'],
+  group: ['@prisma/*', 'prisma', 'ioredis', 'bullmq', 'express'],
   message: 'Drivers and Express are not allowed in this layer.',
 };
 
@@ -218,7 +302,12 @@ export default tseslint.config(
     files: ['apps/api/src/modules/redis/**/*.ts'],
     ignores: ['**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': restrict(...API_MODULE_BASE, PRISMA_RESTRICTED, INFRA_MODULE_ONLY_CONFIG),
+      'no-restricted-imports': restrict(
+        ...API_MODULE_BASE,
+        PRISMA_RESTRICTED,
+        BULLMQ_NOT_IN_API,
+        INFRA_MODULE_ONLY_CONFIG,
+      ),
     },
   },
   // Layers of a domain module. They apply only to modules that choose to have these folders.
@@ -271,14 +360,146 @@ export default tseslint.config(
     },
   },
 
+  // ---- apps/worker ----------------------------------------------------------------------------------------
+  {
+    // Whole application (tests included): framework-free, no database, no cross-application imports.
+    files: ['apps/worker/**/*.ts'],
+    rules: { 'no-restricted-imports': restrict(...BASE, WORKER_FORBIDDEN, NO_OTHER_APP_SOURCES) },
+  },
+  {
+    files: ['apps/worker/src/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': restrict(
+        ...BASE,
+        WORKER_FORBIDDEN,
+        NO_OTHER_APP_SOURCES,
+        WORKER_IORED_NOT_IN_RUNTIME,
+      ),
+    },
+  },
+  {
+    files: ['apps/worker/src/runtime/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    // bullmq is allowed here (and only here); everything else above still applies.
+    rules: {
+      'no-restricted-imports': restrict(
+        ...BASE,
+        WORKER_FORBIDDEN,
+        NO_OTHER_APP_SOURCES,
+        WORKER_IORED_NOT_IN_RUNTIME,
+        RUNTIME_NO_UPWARD,
+      ),
+    },
+  },
+  {
+    files: ['apps/worker/src/processors/**/*.ts', 'apps/worker/src/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': restrict(
+        ...BASE,
+        WORKER_FORBIDDEN,
+        NO_OTHER_APP_SOURCES,
+        WORKER_BULLMQ_ONLY_IN_RUNTIME,
+      ),
+    },
+  },
+  {
+    files: ['apps/worker/src/processors/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': restrict(
+        ...BASE,
+        WORKER_FORBIDDEN,
+        NO_OTHER_APP_SOURCES,
+        WORKER_BULLMQ_ONLY_IN_RUNTIME,
+        PROCESSORS_RUNTIME_PUBLIC_ONLY,
+        PROCESSORS_NO_ENTRY,
+      ),
+    },
+  },
+
+  // ---- tests/system ---------------------------------------------------------------------------------------
+  {
+    // Black-box tests of the running stack. They talk to containers over HTTP / Redis and may use bullmq to inspect jobs, but
+    // like the worker they never import an application's sources, a framework or the database client.
+    files: ['tests/system/**/*.ts'],
+    rules: {
+      'no-restricted-imports': restrict(...BASE, WORKER_FORBIDDEN, NO_OTHER_APP_SOURCES),
+    },
+  },
+
+  // ---- shared backend packages ----------------------------------------------------------------------------
+  {
+    files: ['packages/config/**/*.ts', 'packages/logger/**/*.ts'],
+    rules: {
+      'no-restricted-imports': restrict(...BASE, {
+        group: [
+          '@nestjs/*',
+          '@prisma/*',
+          'prisma',
+          'ioredis',
+          'bullmq',
+          'react',
+          'react-*',
+          'express',
+          '@agentos/queue',
+        ],
+        message: 'config and logger are leaf packages: they depend on zod / pino only.',
+      }),
+    },
+  },
+  {
+    files: ['packages/queue/**/*.ts'],
+    rules: {
+      'no-restricted-imports': restrict(...BASE, {
+        group: ['@nestjs/*', '@prisma/*', 'prisma', 'react', 'react-*', 'express', 'pino', 'pino-*'],
+        message: 'packages/queue must stay framework-free: BullMQ, ioredis, zod and @agentos/contracts only.',
+      }),
+    },
+  },
+
   // ---- apps/web -------------------------------------------------------------------------------------------
   {
     files: ['apps/web/**/*.{ts,tsx}'],
     plugins: { 'react-hooks': reactHooks },
     rules: {
-      'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN),
+      'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN, NO_ROUTER_DOM),
+      'no-restricted-globals': ['error', NO_DIRECT_FETCH],
+      'no-restricted-syntax': ['error', NO_IMPORT_META_ENV],
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
     },
+  },
+  {
+    files: ['apps/web/src/shared/**/*.{ts,tsx}'],
+    ignores: ['**/*.spec.{ts,tsx}'],
+    rules: { 'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN, NO_ROUTER_DOM, SHARED_NO_UPWARD) },
+  },
+  {
+    files: ['apps/web/src/features/**/*.{ts,tsx}'],
+    ignores: ['**/*.spec.{ts,tsx}'],
+    rules: { 'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN, NO_ROUTER_DOM, FEATURE_NO_APP) },
+  },
+  {
+    files: ['apps/web/src/app/**/*.{ts,tsx}'],
+    ignores: ['**/*.spec.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN, NO_ROUTER_DOM, APP_FEATURE_PUBLIC_ONLY),
+    },
+  },
+  {
+    // The API client is the one place allowed to call fetch; env.ts the one place allowed to read import.meta.env.
+    files: ['apps/web/src/shared/api/client.ts'],
+    rules: { 'no-restricted-globals': 'off' },
+  },
+  {
+    files: ['apps/web/src/shared/config/env.ts'],
+    rules: { 'no-restricted-syntax': 'off' },
+  },
+  {
+    // Tests may stub fetch and import across layers (they are not part of the layered architecture).
+    files: ['apps/web/**/*.spec.{ts,tsx}', 'apps/web/src/test/**/*.{ts,tsx}'],
+    rules: { 'no-restricted-globals': 'off', 'no-restricted-syntax': 'off' },
   },
 );

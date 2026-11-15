@@ -1,31 +1,41 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
-import { afterEach, vi } from 'vitest';
+import { afterEach, beforeEach, vi } from 'vitest';
+import { defaultPreferences, useUiPreferences } from '../app/state/ui-preferences.store';
+import { installMatchMedia, resetMedia } from './media';
 
 // Ant Design relies on browser APIs jsdom does not implement.
-Object.defineProperty(window, 'matchMedia', {
-  writable: true,
-  value: (query: string) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: vi.fn(),
-    removeListener: vi.fn(),
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
-    dispatchEvent: vi.fn(),
-  }),
-});
-
 class ResizeObserverStub {
   observe = vi.fn();
   unobserve = vi.fn();
   disconnect = vi.fn();
 }
-vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+
+// jsdom does not implement pseudo-element styles ("Not implemented: getComputedStyle(elt, pseudoElt)"); Ant Design asks for
+// them when measuring scrollbars. Ignoring the second argument is what the jsdom docs recommend.
+const originalGetComputedStyle = window.getComputedStyle.bind(window);
+
+function installBrowserStubs() {
+  window.getComputedStyle = (element) => originalGetComputedStyle(element);
+  installMatchMedia();
+  vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+}
+
+beforeEach(() => {
+  installBrowserStubs();
+  document.title = '';
+  document.documentElement.removeAttribute('data-theme');
+  document.documentElement.removeAttribute('style');
+  document.documentElement.removeAttribute('dir');
+  document.documentElement.lang = 'en';
+  // Every test starts as a first-time visitor on an English, light-or-system desktop browser.
+  window.localStorage.clear();
+  useUiPreferences.setState({ ...defaultPreferences(), locale: 'en', themeMode: 'light' });
+});
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
-  vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+  vi.restoreAllMocks();
+  resetMedia();
 });
