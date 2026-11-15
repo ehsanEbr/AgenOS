@@ -1,7 +1,11 @@
 import {
+  PERMISSION_KEYS,
+  PERMISSIONS,
   type OrganizationRole,
   type PermissionKey,
-  PERMISSIONS,
+  type ProjectPermissionKey,
+  type ProjectRole,
+  projectRoleHasPermission,
   roleHasPermission,
 } from '@agentos/contracts';
 
@@ -10,11 +14,27 @@ import {
  * HOW a membership may change is decided here, in the domain that owns it.
  */
 
-/** Every permission a role holds. The project-role parameter arrives with the projects step (`permissionsFor(role, projectRole)`). */
-export function permissionsFor(role: OrganizationRole): ReadonlySet<PermissionKey> {
-  return new Set(
-    (Object.keys(PERMISSIONS) as PermissionKey[]).filter((permission) => roleHasPermission(role, permission)),
-  );
+/**
+ * The UNION rule (ADR-0011, decision 4): what an organization role grants (organization keys, plus project keys it holds implicitly on
+ * every project) together with what a project role grants ON ONE PROJECT. The project role comes only from the row of the project the
+ * caller is acting on, so the result is only valid for that project. A project role contributes project-scoped keys alone (the catalog's
+ * types forbid anything else), so this never adds an organization permission.
+ */
+export function permissionsFor(
+  role: OrganizationRole,
+  projectRole: ProjectRole | null = null,
+): ReadonlySet<PermissionKey> {
+  const granted = new Set<PermissionKey>();
+  for (const key of PERMISSION_KEYS) {
+    if (roleHasPermission(role, key)) granted.add(key);
+    else if (
+      projectRole !== null &&
+      PERMISSIONS[key].scope === 'project' &&
+      projectRoleHasPermission(projectRole, key as ProjectPermissionKey)
+    )
+      granted.add(key);
+  }
+  return granted;
 }
 
 /**

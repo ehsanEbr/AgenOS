@@ -4,6 +4,7 @@ import { DatabaseModule } from '../database';
 import { IdentityModule } from '../identity';
 import { AuthorizationService } from './application/authorization.service';
 import { MembershipDirectory } from './application/membership-directory';
+import { MembershipLifecycle } from './application/membership-lifecycle';
 import { MembershipService } from './application/membership.service';
 import { OrganizationService } from './application/organization.service';
 import { MEMBERSHIP_REPOSITORY, ORGANIZATION_REPOSITORY } from './application/ports';
@@ -28,10 +29,11 @@ import { OrganizationsController } from './presentation/organizations.controller
     TenantAccess,
     AuthorizationService,
     MembershipDirectory,
+    MembershipLifecycle,
     OrganizationService,
     MembershipService,
     OrganizationAccessGuard,
   ],
-  exports: [TenantAccess, AuthorizationService, MembershipDirectory],
+  exports: [TenantAccess, AuthorizationService, MembershipDirectory, MembershipLifecycle],
 })
 export class OrganizationsModule {}

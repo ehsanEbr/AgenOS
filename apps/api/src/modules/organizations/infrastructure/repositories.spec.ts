@@ -46,6 +46,7 @@ describe('organization-scoped repository methods fail closed', () => {
     ['MembershipRepository.list', (scope) => memberships.list(scope, page, client)],
     ['MembershipRepository.findMember', (scope) => memberships.findMember(scope, user, client)],
     ['MembershipRepository.lockOwners', (scope) => memberships.lockOwners(scope, client)],
+    ['MembershipRepository.lockMember', (scope) => memberships.lockMember(scope, user, client)],
     ['MembershipRepository.add', (scope) => memberships.add(scope, { userId: user, role: 'member' }, client)],
     ['MembershipRepository.setRole', (scope) => memberships.setRole(scope, user, 'admin', client)],
     ['MembershipRepository.remove', (scope) => memberships.remove(scope, user, client)],
@@ -64,7 +65,7 @@ describe('organization-scoped repository methods fail closed', () => {
         (name) =>
           name !== 'constructor' && (repository as Record<string, { length: number }>)[name]!.length >= 1,
       );
-    const keyedByUser = ['find', 'listOrganizationsOf', 'organizationIdsOf', 'createWithOwner'];
+    const keyedByUser = ['find', 'hold', 'listOrganizationsOf', 'organizationIdsOf', 'createWithOwner'];
     const expected = [...scoped(organizations), ...scoped(memberships)]
       .filter((name) => !keyedByUser.includes(name))
       .sort();

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { Prisma } from '@prisma/client';
 import type { OrganizationRole } from '@agentos/contracts';
 import type {
   MembershipRepository,
@@ -96,6 +97,22 @@ export class InMemoryMemberships implements MembershipRepository {
     const { organizationId } = requireScope(scope);
     return this.find(organizationId, userId);
   }
+  lockMember(scope: OrganizationScope, userId: string) {
+    const { organizationId } = requireScope(scope);
+    this.lockMemberCalls += 1;
+    return this.find(organizationId, userId);
+  }
+  /** The organization memberships held with `hold`, in order (the project side holds at most one per operation). */
+  readonly held: { organizationId: string; userId: string }[] = [];
+  hold(organizationId: string, userId: string) {
+    this.held.push({ organizationId, userId });
+    return Promise.resolve(
+      this.rows.some((row) => row.organizationId === organizationId && row.userId === userId),
+    );
+  }
+  lockMemberCalls = 0;
+  /** Set to make `remove` fail like the database does when a dependent row still references the membership. */
+  failRemovalWith?: unknown;
   lockOwners(scope: OrganizationScope) {
     const { organizationId } = requireScope(scope);
     this.lockCalls += 1;
@@ -122,6 +139,7 @@ export class InMemoryMemberships implements MembershipRepository {
   }
   remove(scope: OrganizationScope, userId: string) {
     const { organizationId } = requireScope(scope);
+    if (this.failRemovalWith) return Promise.reject(this.failRemovalWith);
     const index = this.rows.findIndex(
       (row) => row.organizationId === organizationId && row.userId === userId,
     );
@@ -150,3 +168,10 @@ export class FakeUserDirectory {
     return Promise.resolve(this.users.find((user) => user.id === id) ?? null);
   }
 }
+
+/** What Prisma raises when a foreign key blocks a delete (P2003). */
+export const foreignKeyViolation = () =>
+  new Prisma.PrismaClientKnownRequestError('Foreign key constraint violated', {
+    code: 'P2003',
+    clientVersion: 'test',
+  });

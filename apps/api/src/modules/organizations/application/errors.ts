@@ -19,6 +19,14 @@ export const userNotFound = () =>
 export const alreadyMember = () =>
   new AppError('conflict', ORGANIZATION_ERROR_CODES.alreadyMember, 'This user is already a member');
 
+/** Fails closed: dependents of the membership (project memberships) remain and no participant removed them. Nothing was changed. */
+export const membershipInUse = () =>
+  new AppError(
+    'conflict',
+    ORGANIZATION_ERROR_CODES.membershipInUse,
+    'The membership still has dependent records and cannot be removed',
+  );
+
 export const lastOwner = () =>
   new AppError(
     'conflict',

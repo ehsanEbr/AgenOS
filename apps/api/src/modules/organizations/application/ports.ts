@@ -47,11 +47,22 @@ export interface MembershipRepository {
     page: PageRequest,
     db?: DatabaseClient,
   ): Promise<PageOf<MembershipOfUser>>;
+  /**
+   * Keyed by user: `SELECT … FOR SHARE` on that membership row (lock level L3, shared). True when it exists. While the transaction runs
+   * the membership can be neither removed nor re-roled, and anything that depends on it (a project membership) may be created
+   * (ADR-0011 decision 9).
+   */
+  hold(organizationId: string, userId: string, db: DatabaseClient): Promise<boolean>;
   /** Keyed by user: the ids of every organization the user belongs to. */
   organizationIdsOf(userId: string, db?: DatabaseClient): Promise<string[]>;
 
   list(scope: OrganizationScope, page: PageRequest, db?: DatabaseClient): Promise<PageOf<MembershipRecord>>;
   findMember(scope: OrganizationScope, userId: string, db?: DatabaseClient): Promise<MembershipRecord | null>;
+  /**
+   * Reads the member's row `FOR UPDATE` (lock level L3, exclusive): nothing that references it can be created, and it cannot be changed
+   * or removed by anyone else, until the transaction ends. Used by the removal, after `lockOwners`.
+   */
+  lockMember(scope: OrganizationScope, userId: string, db: DatabaseClient): Promise<MembershipRecord | null>;
   /**
    * Locks the owner memberships of the organization until the transaction ends and returns the user ids of its owners as they are
    * AFTER the lock was acquired. Every membership change takes this lock first, so changes to one organization's memberships run one

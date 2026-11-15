@@ -17,6 +17,16 @@ export class MembershipDirectory {
     return (await this.memberships.find(organizationId, userId, db)) !== null;
   }
 
+  /**
+   * Is this user a member of the organization? And, in the same step, keep it that way until `tx` ends: the membership row is locked
+   * `FOR SHARE`, so a concurrent removal of the member waits for this transaction (and then cleans up whatever it created) and a
+   * concurrent removal that got there first makes this answer `false`. A project-side operation holds at most ONE membership this way
+   * (ADR-0011 decision 9, rule R2), and takes it before it writes any project-membership row (R5).
+   */
+  holdMember(organizationId: string, userId: string, tx: DatabaseClient): Promise<boolean> {
+    return this.memberships.hold(organizationId, userId, tx);
+  }
+
   organizationIdsOf(userId: string, db?: DatabaseClient): Promise<string[]> {
     return this.memberships.organizationIdsOf(userId, db);
   }
