@@ -9,11 +9,12 @@ Platform for designing, running and observing AI agent systems. See the
 > typed job contract, retries, graceful shutdown and Redis recovery. The whole system runs in containers (Docker Compose) with a
 > supervised worker, health checks and system-level tests, and CI is split into verification, integration and system jobs.
 >
-> **Phase 2 (identity, organizations and projects) is in progress; steps 2.1 and 2.2 are implemented:** local email/password
+> **Phase 2 (identity, organizations and projects) is in progress; steps 2.1, 2.2 and 2.3 are implemented:** local email/password
 > authentication with server-side sessions (cookie or bearer token), rate limiting that fails closed, an append-only audit trail,
 > separate database roles for the API and for migrations, and organizations with memberships, four code-owned roles, tenant isolation
-> and a last-owner guarantee ([ADR-0010](docs/adr/0010-identity-organizations-projects.md)). There are no projects, domain jobs or other
-> product functionality yet.
+> and a last-owner guarantee ([ADR-0010](docs/adr/0010-identity-organizations-projects.md)), and projects with project members, project roles
+> and visibility-first listing ([ADR-0011](docs/adr/0011-projects-and-project-members.md), proposed, implementation under review). There are
+> no domain jobs, web screens for them, or other product functionality yet.
 >
 > An earlier, larger Phase 1 build (including a BullMQ worker) is preserved on the git branch `phase-1-foundation`.
 
