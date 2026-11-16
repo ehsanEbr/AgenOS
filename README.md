@@ -13,8 +13,8 @@ Platform for designing, running and observing AI agent systems. See the
 > authentication with server-side sessions (cookie or bearer token), rate limiting that fails closed, an append-only audit trail,
 > separate database roles for the API and for migrations, and organizations with memberships, four code-owned roles, tenant isolation
 > and a last-owner guarantee ([ADR-0010](docs/adr/0010-identity-organizations-projects.md)), and projects with project members, project roles
-> and visibility-first listing ([ADR-0011](docs/adr/0011-projects-and-project-members.md), proposed, implementation under review). There are
-> no domain jobs, web screens for them, or other product functionality yet.
+> and visibility-first listing ([ADR-0011](docs/adr/0011-projects-and-project-members.md)). Step 2.3 is on `main` (pull request #5);
+> ADR-0011 stays Proposed until it is accepted. There are no domain jobs, web screens for them, or other product functionality yet.
 >
 > An earlier, larger Phase 1 build (including a BullMQ worker) is preserved on the git branch `phase-1-foundation`.
 
@@ -30,7 +30,7 @@ Platform for designing, running and observing AI agent systems. See the
 pnpm install
 pnpm setup:env      # creates .env with random local passwords (never overwrites an existing .env)
 pnpm infra:up       # starts PostgreSQL + Redis and waits until both are healthy
-pnpm db:deploy      # applies Prisma migrations (none exist yet; safe to run)
+pnpm db:deploy      # applies the committed Prisma migrations (identity, organizations, projects)
 pnpm dev            # builds shared packages, then starts the API, the worker and the web app
 ```
 

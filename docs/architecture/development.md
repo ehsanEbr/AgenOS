@@ -14,7 +14,7 @@ Node.js >= 22.12, pnpm 11 (`corepack enable` picks the pinned version), Docker w
 pnpm install
 pnpm setup:env      # creates .env with random local passwords. On an existing .env it only ADDS missing variables; no value is changed
 pnpm infra:up       # PostgreSQL + Redis, provisions the database roles, waits until healthy
-pnpm db:deploy      # applies Prisma migrations as the migration role (identity and audit tables)
+pnpm db:deploy      # applies Prisma migrations as the migration role (identity, organizations, projects)
 pnpm dev            # builds the shared packages, then runs api, worker and web in watch mode
 ```
 
@@ -39,6 +39,48 @@ curl -s http://localhost:3000/api/v1/me -H "authorization: Bearer <token from th
 ```
 
 Sign-in needs Redis (it rate-limits attempts and **fails closed** when Redis is down); an existing session keeps working without it.
+
+### Create an organization and a project
+
+The signed-in user can create an organization and a project. There is no web screen for either; the API is the interface.
+Every route below is under `/api/v1` and needs the bearer token from the login above (a browser uses the session cookie instead).
+Request and response shapes are `packages/contracts/src/organizations.ts` and `packages/contracts/src/projects.ts`.
+
+```bash
+curl -s -X POST http://localhost:3000/api/v1/organizations \
+  -H 'content-type: application/json' -H "authorization: Bearer <token>" \
+  -d '{"name":"Analytical Engines"}'
+# 201. The caller is the owner. The body includes id.
+
+curl -s -X POST http://localhost:3000/api/v1/projects \
+  -H 'content-type: application/json' -H "authorization: Bearer <token>" \
+  -d '{"organizationId":"<id>","name":"Difference Engine","slug":"difference-engine"}'
+# 201. The caller is project_admin. The slug is unique in the organization and cannot be changed later.
+
+curl -s "http://localhost:3000/api/v1/projects?organizationId=<id>" \
+  -H "authorization: Bearer <token>"
+```
+
+What callers run into (controllers, `AppError` kinds, and `tests/system/test/projects.system.spec.ts`):
+
+- A project the caller cannot see — it does not exist, it belongs to another organization, or they have no membership — is `404`
+  `project_not_found`. `403` means they can see the project and lack the permission. An organization they do not belong to is `404`
+  `organization_not_found`, including when that id is the `organizationId` query on the project list.
+- `slug` is 2–48 characters and matches `^[a-z0-9]+(-[a-z0-9]+)*$`. A duplicate slug in the organization is `409` `project_slug_taken`.
+  `PATCH /projects/:projectId` accepts only `name` and `description`. On create, omit `description` or send non-empty text. On update,
+  `null` clears it and `""` is rejected.
+- `POST /projects/:projectId/archive` and `POST /projects/:projectId/restore` are idempotent (`200`, and a repeat writes no second audit
+  event). Any other change to an archived project is `409` `project_archived`.
+- Organization roles are `owner`, `admin`, `member` and `viewer`. Project roles are `project_admin`, `project_member` and
+  `project_viewer`. Owners and admins see every project of the organization without a project membership (`projectRole` is `null`).
+  Members and viewers see only projects they belong to, and `page.total` counts only those.
+- Add an organization member with `POST /organizations/:organizationId/members` and `{"email","role"}`. The account must already exist;
+  an unknown email is `404` `user_not_found`, and someone who is already a member is `409` `already_member`. Registering that second
+  account needs `AUTH_ALLOW_REGISTRATION=true` (see the link above). Add a project member with `POST /projects/:projectId/members` and
+  `{"userId","projectRole"}`. An unknown user and a user outside the organization are both `404` `organization_member_not_found`.
+- `DELETE /organizations/:organizationId/members/:userId` (`204`) also removes that user's project memberships in the organization.
+  `DELETE /projects/:projectId/members/:userId` (`204`) removes only the project membership. The last owner cannot be removed or
+  demoted (`409` `last_owner`).
 
 ### The full stack in containers
 
@@ -126,6 +168,7 @@ The worker logs `job completed` with the job id, type and correlation id.
   | `worker-config.system.spec.ts` | Invalid configuration: exit 2, **exactly 5 restarts**, then stays down, names the variable, no credential                                                                                                                                                                                                                          |
   | `guards.system.spec.ts`        | The harness's own protections: the isolation guard **aborts before creating anything** for each kind of leaked setting (ports, network, image tag, passwords) and prints no credential; ambient developer variables are neutralized; the image-provenance rule                                                                     |
   | `identity.system.spec.ts`      | Authentication through the web proxy: tables owned by the migration role, the API role's exact privileges, bootstrap and closed registration, cookie sign-in and CSRF, **Redis lost: new sign-ins 503, existing sessions keep working**, the audit trail (the API role cannot read, change or empty it), per-account rate limiting |
+  | `projects.system.spec.ts`      | The `projects` schema, created by the migration role, and the API role's column-level privileges; then organization → project → member through the web proxy: visibility, a foreign organization answering `404`, idempotent archive, and organization removal deleting project memberships                                        |
   | `worker-stuck.system.spec.ts`  | A handler that ignores its abort signal, under the real supervisor: restarts are bounded and BullMQ fails the poison job                                                                                                                                                                                                           |
 
 - **Do not use `docker kill`/`docker stop` to simulate a crash** in your own tests: Docker treats them as a manual stop and never

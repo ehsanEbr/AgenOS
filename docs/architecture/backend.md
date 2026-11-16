@@ -306,8 +306,9 @@ import { currentCorrelationId } from '../../common/request-context';
 
 It follows `await`, timers and `Promise.all`, never leaks between concurrent requests, and survives body parsing; all
 three are tested. It is registered as Nest module middleware (after the body parser) on purpose: registering it with
-`app.use()` before the parser can lose the store. **Keep it tiny**: it carries ids for correlation, not business state. When a
-future phase adds identity, add `userId`/`organizationId` here (and to the log mixin) rather than creating another store.
+`app.use()` before the parser can lose the store. **Keep it tiny**: it carries ids for correlation, not business state. The
+authenticated caller is not stored here. Guards attach it to the request, and handlers read it with `@CurrentPrincipal()`
+(section 12); organization and project access are resolved from the database on that request (sections 13 and 14).
 Outside a request (startup, shutdown, background work) `currentCorrelationId()` is `undefined`.
 
 **Logging.** JSON via pino/nestjs-pino. Use Nest's `Logger` (`private readonly logger = new Logger(MyService.name)`).
@@ -415,7 +416,8 @@ role's URL explicitly, so application code has no way to connect with the owner'
 and nothing more. Identity, for example, has no `DELETE` anywhere because it never deletes. Add the `GRANT`s next to the `CREATE TABLE`
 in the same domain's migration; a test (`test/identity-privileges.int.spec.ts`) lists the exact privileges so an extra grant fails CI.
 
-**Prisma schemas.** One PostgreSQL schema per domain (`identity`, `security`, ...), declared in `base.prisma` (`schemas = [...]`); every
+**Prisma schemas.** `base.prisma` declares `schemas = ["identity", "projects", "security"]`. Organization tables share `identity`
+with Identity; `projects` and `security` are their own schemas. Every
 model and enum names its schema with `@@schema("...")`, and model names are unique across schemas. One migration history, one generated
 client, one transaction may span schemas and modules. A foreign key goes from the downstream module's table to the upstream one (the
 direction of the module dependency), `ON DELETE RESTRICT`, never across in the other direction. `pg_advisory_xact_lock` and other
@@ -471,7 +473,8 @@ await this.transactions.run(async (tx) => {
 ## 13. Organizations, tenancy and authorization (Phase 2.2)
 
 `modules/organizations` owns `identity.organization` and `identity.membership` (the same PostgreSQL schema as Identity, never the same
-table). It depends on `identity` (the `Principal`, `UserDirectory`) and `audit`; nothing depends on it yet (`projects` will).
+table). It depends on `identity` (the `Principal`, `UserDirectory`) and `audit`. `projects` depends on it (section 14);
+`organizations` does not import `projects`.
 
 - **A client-supplied organization id is only a selector.** `TenantAccess.resolve(principal, organizationId)` accepts it if, and only
   if, the caller is a member, read from the database on that request; the result is a `TenantContext { organizationId, userId, role }`.
