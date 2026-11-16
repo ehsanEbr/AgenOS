@@ -1,6 +1,6 @@
 # ADR-0012: Web UI foundations for projects (Phase 2.4): browser E2E, organization context, permission helper, session handling
 
-**Status:** Proposed (design only; nothing is implemented, no code, test, dependency, manifest, lockfile or workflow was changed).
+**Status:** Accepted (revision 5, approved at commit `4cd0c89`; decisions D1 to D5 are accepted, nothing is implemented yet: no code, test, dependency, manifest, lockfile or workflow was changed, and implementation proceeds in the steps of "Proposed implementation sequence", each reviewed before the next).
 **Date:** 2026-11-16
 **Revisions:** 1 = the first proposal. 2 = the review's corrections: the session and cache lifecycle of D4 is specified exactly (the session
 entry is never removed by cleanup), the nested routes of D2 are recorded as approved, and the open items are separated into accepted
@@ -11,8 +11,8 @@ session to **unknown** (revision 3 had kept the user signed in with private data
 order a probe after a timed-out logout, so an uncertain sign-out is **completed by repeating the logout** and never settled by a `GET /me`
 probe; imperative private fetches are prohibited by a lint rule; the multi-tab limitation is recorded. **No decision of revision 1 was
 changed; D1, D2, D3, D5, the routes and the scope are untouched by revisions 2 to 5.**
-**Reading guide:** this ADR keeps three kinds of statement apart. **Accepted architectural decisions** are D1 to D5 (approved in principle
-by the review; the ADR itself stays Proposed until it is accepted). **Implementation-time questions** are facts that cannot be settled
+**Reading guide:** this ADR keeps three kinds of statement apart. **Accepted architectural decisions** are D1 to D5 (approved by the review
+and accepted; see Status). **Implementation-time questions** are facts that cannot be settled
 without the implementation and are listed in "Open implementation questions"; they are not decisions. **Release and acceptance criteria**
 are conditions that must hold before the UI ships and are listed in "Release and acceptance criteria"; they are not architecture.
 **Context:** [ADR-0010](0010-identity-organizations-projects.md) (Accepted) delivers Phase 2 in four reviewed steps; [ADR-0011](0011-projects-and-project-members.md)
