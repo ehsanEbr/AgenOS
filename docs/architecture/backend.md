@@ -1,4 +1,4 @@
-# Backend architecture and conventions (Phase 1.3, amended in Phases 2.1 and 2.2)
+# Backend architecture and conventions (Phase 1.3, amended in Phases 2.1, 2.2 and 2.3)
 
 This is the rulebook for `apps/api`. Every future domain (Identity, Projects, Agent Runtime, Model Intelligence, MCP
 Gateway, Software Intelligence, Observability, Security) is built the way this document describes. Rules marked
@@ -24,7 +24,7 @@ apps/api/src/
 │   └── with-timeout.ts
 └── modules/
     ├── config/  database/  redis/  health/        infrastructure and operational modules
-    ├── audit/  identity/  organizations/         the first domain modules (Phases 2.1 and 2.2; see sections 11 to 13)
+    ├── audit/  identity/  organizations/  projects/   the first domain modules (Phases 2.1 to 2.3; see sections 11 to 14)
     └── <domain>/                   future domains, one folder each
 ```
 
@@ -501,3 +501,41 @@ table). It depends on `identity` (the `Principal`, `UserDirectory`) and `audit`;
   Events of one transaction share `occurred_at` and have no defined order. A change that changes nothing writes nothing.
 - **Other modules** use `TenantAccess`, `AuthorizationService`, `MembershipDirectory` and the `TenantContext`/`OrganizationScope` types
   from `modules/organizations/index.ts`; they never import its repositories or tables.
+
+## 14. Projects and project members (Phase 2.3)
+
+`modules/projects` owns `projects.project` and `projects.project_member` (their own PostgreSQL schema). It depends on `organizations` (the
+tenant, the permission matrix, the membership directory), `identity` (the principal, `UserDirectory`) and `audit`; **nothing depends on
+it**, and `organizations` imports nothing from it. The design and its evidence are in [ADR-0011](../adr/0011-projects-and-project-members.md).
+
+- **Access.** Anything the caller cannot see (a project that does not exist, one of another organization, one in their own organization
+  they have no project membership on) is the same `404 project_not_found`; a project they can see but may not do this to is `403`. The
+  effective permissions on a project are the **union** of the organization role and the explicit project role **on that project only**
+  (`permissionsFor`); a project role contributes project-scoped keys alone (the catalog's types forbid anything else). Owners and admins
+  have implicit access to every project of their organization; members and viewers need a project membership.
+- **One place builds the trust.** `ProjectAccess` is the only code that creates a `ProjectContext` or `OrganizationContext`, from what it
+  has just read from PostgreSQL. Project repositories take a `ProjectScope` (or an `OrganizationScope`) as the first parameter and throw
+  before any query without a genuine one; the only unscoped methods are the named resolution and cleanup methods.
+  `test/scope-construction.e2e.spec.ts` pins every place a scope may be built.
+- **Routes.** `/projects` routes are under `ProjectAccessGuard` and declare either `@RequireProjectPermission(key)` (found by project id
+  among the caller's organizations) or `@RequireOrganizationPermission(key, 'query' | 'body')` (an organization selector validated against
+  the caller's memberships). `test/route-metadata.e2e.spec.ts` pins the permission and the way each route reaches its tenant.
+- **Listing applies visibility inside the query**, before the status filter, the count and the page: owners and admins see every project of
+  the organization, members and viewers only those they belong to, and `page.total` counts only what they can see.
+- **Changes.** Every change opens one transaction, takes the project row lock (`FOR UPDATE`), re-reads the caller's access from the
+  database, applies the change and writes its audit event. Archive and restore are idempotent (a repeat answers `200` with the same
+  body and writes nothing). An archived project accepts no other change (`409 project_archived`). Creating a project writes the project,
+  the creator's `project_admin` row, `project.created` and `project_member.added` (origin `project_created`) in one transaction.
+- **Lock order (ADR-0011 decision 9)**: organization owner rows (L1, organization side only) → project row (L2, project side only) → ONE
+  organization-membership row (L3: the removed member exclusively, or the target/creator shared) → `project_member` rows (L4). The project
+  side never holds more than one membership row, and the removal participant takes no project lock. Breaking this deadlocks (the stress
+  test in `projects-database.int.spec.ts` guards it).
+- **Ending an organization membership** removes the user's project memberships in the same transaction: `organizations` calls the
+  `MembershipRemovalParticipant`s registered with its `MembershipLifecycle`; `projects` registers `ProjectMembershipCleanup` when it
+  starts, the registry is sealed at bootstrap, and the application refuses to start if the registration did not take. A participant failure
+  rolls the whole removal back; with dependents and no participant the removal answers `409 membership_in_use`.
+- **The database backs it up.** Two composite foreign keys (`RESTRICT`) make a cross-organization or orphaned project membership
+  impossible; column-level `UPDATE` grants make a project's organization and slug, and a membership's project, organization and user,
+  immutable for the application role; there is no `DELETE` on `project`.
+- **Known window (V1).** A project change that is already past its in-transaction authorization may complete while its actor is demoted;
+  every later request fails. See the ADR-0011 implementation status.

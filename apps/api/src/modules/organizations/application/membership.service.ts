@@ -2,12 +2,18 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { AuditEventInput, OrganizationRole } from '@agentos/contracts';
 import { UserDirectory, type UserSummary } from '../../identity';
 import { AuditRecorder } from '../../audit';
-import { type DatabaseClient, TransactionRunner, isUniqueConstraintViolation } from '../../database';
+import {
+  type DatabaseClient,
+  TransactionRunner,
+  isForeignKeyViolation,
+  isUniqueConstraintViolation,
+} from '../../database';
 import type { MembershipRecord } from '../domain/organization';
 import { leavesNoOwner, permissionsToChangeMembership } from '../domain/membership-policy';
 import { type TenantContext, scopeOf } from '../domain/tenant';
 import { AuthorizationService } from './authorization.service';
-import { alreadyMember, lastOwner, memberNotFound, userNotFound } from './errors';
+import { alreadyMember, lastOwner, memberNotFound, membershipInUse, userNotFound } from './errors';
+import { MembershipLifecycle } from './membership-lifecycle';
 import { MEMBERSHIP_REPOSITORY, type MembershipRepository, type PageOf, type PageRequest } from './ports';
 import { TenantAccess } from './tenant-access';
 
@@ -43,6 +49,7 @@ export class MembershipService {
     private readonly authorization: AuthorizationService,
     private readonly transactions: TransactionRunner,
     private readonly audit: AuditRecorder,
+    private readonly lifecycle: MembershipLifecycle,
   ) {}
 
   async list(tenant: TenantContext, page: PageRequest): Promise<PageOf<MemberView>> {
@@ -118,8 +125,8 @@ export class MembershipService {
   async remove(tenant: TenantContext, userId: string): Promise<void> {
     await this.transactions.run(async (tx) => {
       const scope = scopeOf(tenant);
-      const owners = await this.memberships.lockOwners(scope, tx);
-      const target = await this.memberships.findMember(scope, userId, tx);
+      const owners = await this.memberships.lockOwners(scope, tx); // L1
+      const target = await this.memberships.lockMember(scope, userId, tx); // L3, exclusive (ADR-0011 decision 9)
       if (!target) throw memberNotFound();
       const self = userId === tenant.userId;
       const actor = self
@@ -129,7 +136,25 @@ export class MembershipService {
       if (target.role === 'owner') this.authorization.authorize(actor, 'member.manage_owners');
 
       if (target.role === 'owner' && leavesNoOwner(owners, userId)) throw lastOwner();
-      await this.memberships.remove(scope, userId, tx);
+
+      // Whatever depends on this membership (project memberships) is removed by its owner, inside this transaction and BEFORE the row
+      // goes, because the foreign keys are RESTRICT. A participant failure propagates and rolls the whole removal back.
+      const removal = {
+        organizationId: tenant.organizationId,
+        userId,
+        membershipId: target.id,
+        actorUserId: actor.userId,
+      };
+      for (const participant of this.lifecycle.participants())
+        await participant.onMembershipRemoved(removal, tx);
+
+      try {
+        await this.memberships.remove(scope, userId, tx);
+      } catch (error) {
+        // Dependents remain although no participant removed them: fail closed, never orphan a row.
+        if (isForeignKeyViolation(error)) throw membershipInUse();
+        throw error;
+      }
 
       await this.record(
         actor,

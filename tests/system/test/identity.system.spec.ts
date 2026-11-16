@@ -55,7 +55,7 @@ describe('the migrations ran as the migration role and the API runs as its own r
     const owners = await sqlAs(
       'agentos_migrate',
       stack.migratePassword,
-      "SELECT string_agg(DISTINCT tableowner, ',') FROM pg_tables WHERE schemaname IN ('identity', 'security')",
+      "SELECT string_agg(DISTINCT tableowner, ',') FROM pg_tables WHERE schemaname IN ('identity', 'projects', 'security')",
     );
     expect(owners.stdout.trim()).toBe('agentos_migrate');
 

@@ -7,12 +7,14 @@ import {
   FakeUserDirectory,
   InMemoryMemberships,
   InMemoryOrganizations,
+  foreignKeyViolation,
 } from '../../../../test/support/organization-fakes';
 import type { AuditRecorder } from '../../audit';
 import type { TransactionRunner } from '../../database';
 import type { UserDirectory } from '../../identity';
 import { type TenantContext } from '../domain/tenant';
 import { AuthorizationService } from './authorization.service';
+import { MembershipLifecycle, type MembershipRemovalParticipant } from './membership-lifecycle';
 import { MembershipService } from './membership.service';
 import { OrganizationService } from './organization.service';
 import { TenantAccess } from './tenant-access';
@@ -27,7 +29,9 @@ function build() {
   const tenants = new TenantAccess(memberships);
   const authorization = new AuthorizationService();
   const auditRecorder = audit as unknown as AuditRecorder;
+  const lifecycle = new MembershipLifecycle();
   return {
+    lifecycle,
     memberships,
     organizations,
     users,
@@ -48,6 +52,7 @@ function build() {
       authorization,
       transactions,
       auditRecorder,
+      lifecycle,
     ),
   };
 }
@@ -389,5 +394,122 @@ describe('listing', () => {
       'founder@example.com',
       'viewer0@example.com',
     ]);
+  });
+});
+
+describe('removing a member runs the registered participants (ADR-0011 decision 3)', () => {
+  /** A participant that records what it saw: the call order, whether the membership still existed, and the transaction it was handed. */
+  function spy(world: Awaited<ReturnType<typeof organizationWith>>, name = 'spy') {
+    const calls: { name: string; membershipStillThere: boolean; tx: unknown; removal: unknown }[] = [];
+    const participant: MembershipRemovalParticipant = {
+      name,
+      onMembershipRemoved: async (removal, tx) => {
+        calls.push({
+          name,
+          membershipStillThere: world.memberships.rows.some((row) => row.userId === removal.userId),
+          tx,
+          removal,
+        });
+      },
+    };
+    return { participant, calls };
+  }
+
+  it('calls every participant in registration order, before the row is deleted, with the removal details', async () => {
+    const world = await organizationWith(['member']);
+    const first = spy(world, 'first');
+    const second = spy(world, 'second');
+    world.lifecycle.registerRemovalParticipant(first.participant);
+    world.lifecycle.registerRemovalParticipant(second.participant);
+
+    await world.membershipService.remove(world.actors.founder!, world.ids.member0!);
+
+    expect(first.calls).toHaveLength(1);
+    expect(second.calls).toHaveLength(1);
+    expect(first.calls[0]).toMatchObject({
+      membershipStillThere: true,
+      removal: {
+        organizationId: world.organization.id,
+        userId: world.ids.member0,
+        actorUserId: world.ids.founder,
+        membershipId: expect.any(String),
+      },
+    });
+    expect(world.memberships.rolesIn(world.organization.id)[world.ids.member0!]).toBeUndefined();
+  });
+
+  it('tells the participant who removed the member, and passes the same transaction handle to all of them', async () => {
+    const world = await organizationWith(['member']);
+    const first = spy(world, 'first');
+    const second = spy(world, 'second');
+    world.lifecycle.registerRemovalParticipant(first.participant);
+    world.lifecycle.registerRemovalParticipant(second.participant);
+
+    await world.membershipService.remove(world.actors.member0!, world.ids.member0!); // leaving
+
+    expect(first.calls[0]?.removal).toMatchObject({
+      userId: world.ids.member0,
+      actorUserId: world.ids.member0,
+    });
+    expect(first.calls[0]?.tx).toBe(second.calls[0]?.tx);
+  });
+
+  it('keeps the membership and writes no event when a participant fails, and stops calling the others', async () => {
+    const world = await organizationWith(['member']);
+    const later = spy(world, 'later');
+    world.lifecycle.registerRemovalParticipant({
+      name: 'broken',
+      onMembershipRemoved: () => Promise.reject(new Error('cleanup failed')),
+    });
+    world.lifecycle.registerRemovalParticipant(later.participant);
+
+    await expect(world.membershipService.remove(world.actors.founder!, world.ids.member0!)).rejects.toThrow(
+      'cleanup failed',
+    );
+
+    expect(world.memberships.rolesIn(world.organization.id)[world.ids.member0!]).toBe('member');
+    expect(world.audit.events).toEqual([]);
+    expect(later.calls).toEqual([]);
+  });
+
+  it('does not call a participant for a removal that is refused (not allowed, not a member, last owner)', async () => {
+    const world = await organizationWith(['member', 'viewer']);
+    const watcher = spy(world);
+    world.lifecycle.registerRemovalParticipant(watcher.participant);
+
+    expect(await code(world.membershipService.remove(world.actors.member0!, world.ids.viewer1!))).toBe(
+      'forbidden',
+    );
+    expect(await code(world.membershipService.remove(world.actors.founder!, randomUUID()))).toBe(
+      'member_not_found',
+    );
+    expect(await code(world.membershipService.remove(world.actors.founder!, world.ids.founder!))).toBe(
+      'last_owner',
+    );
+    expect(watcher.calls).toEqual([]);
+  });
+
+  it('answers 409 membership_in_use, changing nothing, when the database still refuses the delete because dependents remain', async () => {
+    const world = await organizationWith(['member']);
+    world.memberships.failRemovalWith = foreignKeyViolation();
+
+    expect(await code(world.membershipService.remove(world.actors.founder!, world.ids.member0!))).toBe(
+      'membership_in_use',
+    );
+    expect(world.audit.events).toEqual([]);
+  });
+
+  it('behaves exactly as before when no participant is registered', async () => {
+    const world = await organizationWith(['member']);
+    expect(world.lifecycle.participants()).toEqual([]);
+    await world.membershipService.remove(world.actors.founder!, world.ids.member0!);
+    expect(world.audit.actions()).toEqual(['membership.removed']);
+  });
+
+  it('locks the subject membership before anything is removed', async () => {
+    const world = await organizationWith(['member']);
+    const before = world.memberships.lockMemberCalls;
+    await world.membershipService.remove(world.actors.founder!, world.ids.member0!);
+    expect(world.memberships.lockMemberCalls - before).toBe(1);
   });
 });

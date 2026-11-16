@@ -1,0 +1,67 @@
+// Projects and project members (ADR-0011). Owned by apps/api/src/modules/projects; the tables live in their own PostgreSQL schema.
+// A project belongs to exactly one organization for its whole life; its organization and slug never change (the application role has no
+// UPDATE privilege on those columns, see the privileges migration). Roles are code (packages/contracts/src/permissions.ts).
+
+enum ProjectStatus {
+  active
+  archived
+
+  @@map("project_status")
+  @@schema("projects")
+}
+
+enum ProjectRole {
+  project_admin
+  project_member
+  project_viewer
+
+  @@map("project_role")
+  @@schema("projects")
+}
+
+model Project {
+  id             String        @id @default(uuid()) @db.Uuid
+  organizationId String        @map("organization_id") @db.Uuid
+  name           String
+  /// Lower-case letters, digits and single hyphens (CHECK in the privileges migration). Unique per organization, immutable.
+  slug           String
+  description    String?
+  status         ProjectStatus @default(active)
+  /// NULL while active; CHECKed to agree with `status`.
+  archivedAt     DateTime?     @map("archived_at") @db.Timestamptz(6)
+  createdAt      DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // Foreign keys point from this module to the upstream one (projects -> organizations) and never cascade (ADR-0010, decision 7).
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  members      ProjectMember[]
+
+  @@unique([organizationId, slug])
+  /// Redundant with the primary key, but the target the composite foreign key of project_member needs.
+  @@unique([id, organizationId])
+  @@index([organizationId, status, createdAt, id])
+  @@map("project")
+  @@schema("projects")
+}
+
+/// One user's role on one project. The two composite foreign keys make the data itself guarantee that the user is a member of the
+/// project's organization: a project membership cannot cross organizations and cannot outlive the organization membership.
+model ProjectMember {
+  id             String      @id @default(uuid()) @db.Uuid
+  projectId      String      @map("project_id") @db.Uuid
+  /// A copy of the project's organization, forced to agree with it by the first foreign key below.
+  organizationId String      @map("organization_id") @db.Uuid
+  userId         String      @map("user_id") @db.Uuid
+  role           ProjectRole
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime    @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  project    Project    @relation(fields: [projectId, organizationId], references: [id, organizationId], onDelete: Restrict)
+  membership Membership @relation(fields: [organizationId, userId], references: [organizationId, userId], onDelete: Restrict)
+
+  @@unique([projectId, userId])
+  @@index([organizationId, userId])
+  @@index([userId])
+  @@map("project_member")
+  @@schema("projects")
+}

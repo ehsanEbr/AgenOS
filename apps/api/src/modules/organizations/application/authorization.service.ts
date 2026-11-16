@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { type PermissionKey, roleHasPermission } from '@agentos/contracts';
+import { type PermissionKey, type ProjectRole, roleHasPermission } from '@agentos/contracts';
+import { permissionsFor } from '../domain/membership-policy';
 import type { TenantContext } from '../domain/tenant';
 import { forbidden } from './errors';
 
@@ -18,5 +19,23 @@ export class AuthorizationService {
 
   authorize(tenant: TenantContext, ...permissions: PermissionKey[]): void {
     for (const permission of permissions) if (!this.can(tenant, permission)) throw forbidden();
+  }
+
+  /**
+   * Everything the caller may do on ONE project: the union of their organization role and their explicit role on that project
+   * (`null` when they have none). Valid only for the project whose role was passed in. Whether the caller has access at all is
+   * `has('project.read')`; the caller of this method decides 404 versus 403 (ADR-0011, decision 5).
+   */
+  permissionsOn(tenant: TenantContext, projectRole: ProjectRole | null): ReadonlySet<PermissionKey> {
+    return permissionsFor(tenant.role, projectRole);
+  }
+
+  authorizeOnProject(
+    tenant: TenantContext,
+    projectRole: ProjectRole | null,
+    ...permissions: PermissionKey[]
+  ): void {
+    const granted = this.permissionsOn(tenant, projectRole);
+    for (const permission of permissions) if (!granted.has(permission)) throw forbidden();
   }
 }

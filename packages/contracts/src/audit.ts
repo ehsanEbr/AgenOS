@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { organizationRoleSchema } from './permissions';
+import { organizationRoleSchema, projectRoleSchema } from './permissions';
 import { idSchema } from './primitives';
 
 /*
@@ -138,6 +138,72 @@ export const auditEventSchema = z.discriminatedUnion('action', [
     resourceType: z.literal('membership'),
     result: success,
     metadata: z.object({ userId: idSchema }).strict(),
+    ...common,
+  }),
+  // --- Projects and project members (step 2.3). `projectId` is the project; `resourceId` the project or the project_member row. ---
+  z.object({
+    // Written once for every project, in the same transaction as the creator's project_member.added.
+    action: z.literal('project.created'),
+    resourceType: z.literal('project'),
+    result: success,
+    metadata: none,
+    ...common,
+  }),
+  z.object({
+    // Field names only, never the new values.
+    action: z.literal('project.updated'),
+    resourceType: z.literal('project'),
+    result: success,
+    metadata: z.object({ changedFields: z.array(z.enum(['name', 'description'])).min(1) }).strict(),
+    ...common,
+  }),
+  z.object({
+    // Only when the state really changed: a repeated archive writes nothing.
+    action: z.literal('project.archived'),
+    resourceType: z.literal('project'),
+    result: success,
+    metadata: none,
+    ...common,
+  }),
+  z.object({
+    action: z.literal('project.restored'),
+    resourceType: z.literal('project'),
+    result: success,
+    metadata: none,
+    ...common,
+  }),
+  z.object({
+    // Written exactly once for every project_member row ever created. `origin` tells the creator's automatic initial grant apart from an
+    // explicit add without relying on event order.
+    action: z.literal('project_member.added'),
+    resourceType: z.literal('project_member'),
+    result: success,
+    metadata: z
+      .object({ userId: idSchema, role: projectRoleSchema, origin: z.enum(['added', 'project_created']) })
+      .strict(),
+    ...common,
+  }),
+  z.object({
+    action: z.literal('project_member.role_changed'),
+    resourceType: z.literal('project_member'),
+    result: success,
+    metadata: z
+      .object({ userId: idSchema, previousRole: projectRoleSchema, role: projectRoleSchema })
+      .strict(),
+    ...common,
+  }),
+  z.object({
+    // `organization_membership_removed`: the user's organization membership ended and the cleanup removed this row in the same transaction.
+    action: z.literal('project_member.removed'),
+    resourceType: z.literal('project_member'),
+    result: success,
+    metadata: z
+      .object({
+        userId: idSchema,
+        role: projectRoleSchema,
+        reason: z.enum(['removed', 'organization_membership_removed']),
+      })
+      .strict(),
     ...common,
   }),
 ]);

@@ -10,6 +10,7 @@ import { DatabaseExceptionFilter } from './modules/database';
 import { HealthModule } from './modules/health';
 import { AuthenticationGuard, IdentityModule } from './modules/identity';
 import { OrganizationsModule } from './modules/organizations';
+import { ProjectsModule } from './modules/projects';
 
 /**
  * Composition root: wires modules and registers the global (cross-cutting) pipe, filters and guard.
@@ -32,6 +33,7 @@ import { OrganizationsModule } from './modules/organizations';
     HealthModule,
     IdentityModule,
     OrganizationsModule,
+    ProjectsModule,
   ],
   providers: [
     { provide: APP_PIPE, useClass: ZodValidationPipe },

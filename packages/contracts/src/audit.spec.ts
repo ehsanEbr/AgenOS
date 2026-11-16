@@ -4,7 +4,7 @@ import { AUDIT_ACTIONS, auditEventSchema } from './index';
 describe('audit event contracts', () => {
   const user = crypto.randomUUID();
 
-  it('lists the identity and organization actions and nothing from later phases', () => {
+  it('lists the identity, organization and project actions and nothing from later phases', () => {
     expect(AUDIT_ACTIONS).toEqual([
       'auth.registered',
       'auth.login_succeeded',
@@ -21,6 +21,13 @@ describe('audit event contracts', () => {
       'membership.role_changed',
       'organization.owner_granted',
       'organization.owner_revoked',
+      'project.created',
+      'project.updated',
+      'project.archived',
+      'project.restored',
+      'project_member.added',
+      'project_member.role_changed',
+      'project_member.removed',
     ]);
   });
 

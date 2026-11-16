@@ -130,6 +130,7 @@ apps/api/
     │   ├── base.prisma        generator + datasource ONLY (datasource: `DATABASE_MIGRATE_URL`, `schemas = [...]`)
     │   ├── identity.prisma    users, credentials, sessions        (PostgreSQL schema `identity`)
     │   ├── organizations.prisma  organizations, memberships       (PostgreSQL schema `identity`, tables of the organizations module)
+    │   ├── projects.prisma    projects, project members           (PostgreSQL schema `projects`)
     │   └── audit.prisma       the audit trail                     (PostgreSQL schema `security`)
     └── migrations/            committed to git; applied as the migration role
 ```

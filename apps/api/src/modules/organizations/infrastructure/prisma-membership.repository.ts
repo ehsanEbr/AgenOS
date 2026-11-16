@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { OrganizationRole } from '@agentos/contracts';
+import { type OrganizationRole, idSchema } from '@agentos/contracts';
 import { type DatabaseClient, PrismaService } from '../../database';
 import type { MembershipRepository, NewMembership, PageOf, PageRequest } from '../application/ports';
 import type { MembershipOfUser, MembershipRecord } from '../domain/organization';
@@ -82,6 +82,30 @@ export class PrismaMembershipRepository implements MembershipRepository {
       where: { organizationId_userId: { organizationId, userId } },
     });
     return row && toMembershipRecord(row);
+  }
+
+  async lockMember(
+    scope: OrganizationScope,
+    userId: string,
+    db: DatabaseClient,
+  ): Promise<MembershipRecord | null> {
+    const { organizationId } = requireScope(scope);
+    // The lock first, then a separate read: the second statement takes a fresh snapshot, so it returns what the transaction that held
+    // the lock before us committed (a lock wait alone would not show it). Names are schema-qualified because raw SQL ignores Prisma's mapping.
+    await db.$queryRaw`
+      SELECT id FROM identity.membership
+       WHERE organization_id = ${organizationId}::uuid AND user_id = ${userId}::uuid
+         FOR UPDATE`;
+    return this.find(organizationId, userId, db);
+  }
+
+  async hold(organizationId: string, userId: string, db: DatabaseClient): Promise<boolean> {
+    if (!idSchema.safeParse(organizationId).success || !idSchema.safeParse(userId).success) return false;
+    const rows = await db.$queryRaw<{ id: string }[]>`
+      SELECT id FROM identity.membership
+       WHERE organization_id = ${organizationId}::uuid AND user_id = ${userId}::uuid
+         FOR SHARE`;
+    return rows.length > 0;
   }
 
   async lockOwners(scope: OrganizationScope, db: DatabaseClient): Promise<string[]> {
