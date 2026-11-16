@@ -728,3 +728,317 @@ describe('the accepted in-flight actor window (ADR-0011 Q13, variant V1)', () =>
     expect((await projectRow(project.id)).name).toBe('Changed while being demoted');
   });
 });
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Holds the NEXT project update inside its transaction, at the same synchronization point as the actor-window test above: after the
+ * update has authorized its actor under the project lock and written the row, before it records its audit event and commits.
+ */
+function holdProjectUpdate() {
+  let reached!: () => void;
+  const inFlight = new Promise<void>((resolve) => (reached = resolve));
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  return {
+    inFlight,
+    release,
+    options: {
+      beforeAudit: async (entry: { action: string }) => {
+        if (entry.action !== 'project.updated') return;
+        reached();
+        await held;
+      },
+    },
+  };
+}
+
+const orphanProjectMembers = async () =>
+  Number(
+    (
+      await h.inspector.$queryRawUnsafe<{ n: bigint }[]>(
+        `SELECT count(*) AS n FROM projects.project_member pm WHERE NOT EXISTS (SELECT 1 FROM identity.membership m WHERE m.organization_id = pm.organization_id AND m.user_id = pm.user_id)`,
+      )
+    )[0]?.n,
+  );
+
+describe('the in-flight actor window with an EXPLICIT project membership (ADR-0011 Q13, variant V1)', () => {
+  it('Test 1: an update in flight completes when its admin actor is demoted to viewer, and the explicit project_admin role keeps project access but restores no organization privilege', async () => {
+    const owner = await h.signUp('w1-owner');
+    const actor = await h.signUp('w1-actor');
+    const organization = await h.createOrganization(owner);
+    await h.addOrganizationMember(owner, organization, actor, 'admin');
+    const project = await createProject(actor, organization, `w1-${uid()}`, 'Before'); // the creator holds an explicit project_admin row
+    expect(
+      (await h.inspector.projectMember.findMany({ where: { projectId: project.id, userId: actor.id } })).map(
+        (row) => row.role,
+      ),
+    ).toEqual(['project_admin']);
+
+    const hold = holdProjectUpdate();
+    const slow = await h.createApp(hold.options);
+    try {
+      const pending = h
+        .as(actor.token, slow)
+        .patch(`/projects/${project.id}`, { name: 'Changed while being demoted' })
+        .then((response) => response);
+      await hold.inFlight; // authorized as organization ADMIN + explicit project_admin, waiting to be recorded
+
+      const demoted = await call(owner).patch(`/organizations/${organization}/members/${actor.id}`, {
+        role: 'viewer',
+      });
+      expect(demoted.status).toBe(200); // the organization side is not blocked by the update in flight
+
+      hold.release();
+      const finished = await pending;
+      expect(finished.status).toBe(200); // THE WINDOW: authorized before the demotion, completes after it
+      expect((await projectRow(project.id)).name).toBe('Changed while being demoted');
+    } finally {
+      hold.release();
+      await slow.close();
+    }
+
+    // The demotion is now visible. The explicit membership still stands, so project access does NOT disappear (no 404 here) ...
+    const read = await call(actor).get(`/projects/${project.id}`);
+    expect(read.status).toBe(200);
+    expect(projectSchema.parse(read.body)).toMatchObject({
+      projectRole: 'project_admin',
+      name: 'Changed while being demoted',
+    });
+    expect((await call(actor).patch(`/projects/${project.id}`, { name: 'Still administered' })).status).toBe(
+      200,
+    ); // project-level write
+    expect((await call(actor).post(`/projects/${project.id}/archive`)).status).toBe(200);
+    expect((await call(actor).post(`/projects/${project.id}/restore`)).status).toBe(200);
+    expect(
+      pageOfProjects
+        .parse((await call(actor).get(`/projects?organizationId=${organization}`)).body)
+        .items.map((item) => item.id),
+    ).toEqual([project.id]);
+
+    // ... but nothing at ORGANIZATION level comes back with it: the organization role is now viewer
+    const create = await call(actor).post('/projects', {
+      organizationId: organization,
+      name: 'Another',
+      slug: `w1b-${uid()}`,
+    });
+    expect([create.status, errorOf(create.body).code]).toEqual([403, 'forbidden']);
+    expect((await call(actor).patch(`/organizations/${organization}`, { name: 'Taken over' })).status).toBe(
+      403,
+    );
+    expect(
+      (
+        await call(actor).post(`/organizations/${organization}/members`, {
+          email: owner.email,
+          role: 'owner',
+        })
+      ).status,
+    ).toBe(403);
+    expect((await call(actor).get(`/organizations/${organization}`)).status).toBe(200); // what a viewer may do
+    expect(await h.inspector.project.count({ where: { organizationId: organization } })).toBe(1); // no second project was created
+  });
+
+  it('Test 2: an update in flight when its actor is REMOVED from the organization — measured: does the removal wait, what survives, what the next request sees', async () => {
+    const owner = await h.signUp('w2-owner');
+    const actor = await h.signUp('w2-actor');
+    const organization = await h.createOrganization(owner);
+    await h.addOrganizationMember(owner, organization, actor, 'member');
+    const project = await createProject(owner, organization, `w2-${uid()}`, 'Before');
+    const second = await createProject(owner, organization, `w2b-${uid()}`, 'Second');
+    expect(
+      (
+        await call(owner).post(`/projects/${project.id}/members`, {
+          userId: actor.id,
+          projectRole: 'project_admin',
+        })
+      ).status,
+    ).toBe(201);
+    expect(
+      (
+        await call(owner).post(`/projects/${second.id}/members`, {
+          userId: actor.id,
+          projectRole: 'project_viewer',
+        })
+      ).status,
+    ).toBe(201);
+    await call(owner).post(`/projects/${second.id}/archive`).expect(200); // the cleanup must also reach an archived project
+
+    const hold = holdProjectUpdate();
+    const slow = await h.createApp(hold.options);
+    let removalWaitedForTheUpdate: boolean;
+    let updated: { status: number };
+    let removed: { status: number };
+    try {
+      const pending = h
+        .as(actor.token, slow)
+        .patch(`/projects/${project.id}`, { name: 'Changed while being removed' })
+        .then((response) => response);
+      await hold.inFlight; // authorized as organization MEMBER + explicit project_admin, holding the project row, waiting to be recorded
+
+      let removalSettled = false;
+      const removal = call(owner)
+        .delete(`/organizations/${organization}/members/${actor.id}`)
+        .then((response) => {
+          removalSettled = true;
+          return response;
+        });
+      await sleep(2000); // far longer than a removal takes when nothing blocks it (tens of milliseconds)
+      removalWaitedForTheUpdate = !removalSettled;
+
+      hold.release();
+      [updated, removed] = [await pending, await removal];
+    } finally {
+      hold.release();
+      await slow.close();
+    }
+
+    // MEASURED: the removal did NOT wait for the update in flight. (The update holds only the project row; the removal takes the owner rows,
+    // the removed member's membership row and deletes project_member rows, which do not conflict with a lock on the PROJECT row.)
+    expect(removalWaitedForTheUpdate).toBe(false);
+    expect(removed.status).toBe(204);
+    expect(updated.status).toBe(200); // THE WINDOW for a removal: the update was authorized before the removal and completes after it
+    expect((await projectRow(project.id)).name).toBe('Changed while being removed');
+
+    // the cleanup was atomic with the removal: no membership, no project membership of the actor anywhere, no orphan
+    expect(
+      await h.inspector.membership.count({ where: { organizationId: organization, userId: actor.id } }),
+    ).toBe(0);
+    expect(
+      await h.inspector.projectMember.count({ where: { organizationId: organization, userId: actor.id } }),
+    ).toBe(0);
+    expect(await orphanProjectMembers()).toBe(0);
+    for (const [target, role] of [
+      [project, 'project_admin'],
+      [second, 'project_viewer'],
+    ] as const) {
+      const cleanup = (await auditOf(target.id)).filter(
+        (entry) =>
+          entry.action === 'project_member.removed' &&
+          (entry.metadata as { userId: string }).userId === actor.id,
+      );
+      expect(cleanup, target.id).toHaveLength(1);
+      expect(cleanup[0]!.metadata).toEqual({
+        userId: actor.id,
+        role,
+        reason: 'organization_membership_removed',
+      });
+      expect(cleanup[0]!.actorUserId).toBe(owner.id);
+    }
+    // the in-flight update recorded its own event, attributed to the actor who was authorized when it started
+    expect(
+      (await auditOf(project.id)).filter(
+        (entry) => entry.action === 'project.updated' && entry.actorUserId === actor.id,
+      ),
+    ).toHaveLength(1);
+
+    // every NEW request now sees the removal: the generic 404 (and the organization is no longer theirs)
+    for (const response of [
+      await call(actor).get(`/projects/${project.id}`),
+      await call(actor).patch(`/projects/${project.id}`, { name: 'Again' }),
+      await call(actor).get(`/projects/${second.id}`),
+      await call(actor).get(`/projects/${project.id}/members`),
+    ]) {
+      expect(response.status).toBe(404);
+      expect(errorOf(response.body).code).toBe('project_not_found');
+    }
+    const list = await call(actor).get(`/projects?organizationId=${organization}`);
+    expect([list.status, errorOf(list.body).code]).toEqual([404, 'organization_not_found']);
+    expect((await projectRow(project.id)).name).toBe('Changed while being removed'); // the refused requests changed nothing
+  });
+});
+
+describe('removing an explicit project membership recalculates access from the organization role alone', () => {
+  it('Test 3: a member and a viewer lose the project (404), an admin keeps it through the organization role (projectRole null), and organization-level rights are untouched', async () => {
+    const [owner, member, viewer, admin] = [
+      await h.signUp('x3-owner'),
+      await h.signUp('x3-member'),
+      await h.signUp('x3-viewer'),
+      await h.signUp('x3-admin'),
+    ];
+    const organization = await h.createOrganization(owner);
+    for (const [person, role] of [
+      [member, 'member'],
+      [viewer, 'viewer'],
+      [admin, 'admin'],
+    ] as const)
+      await h.addOrganizationMember(owner, organization, person, role);
+    const project = await createProject(owner, organization, `x3-${uid()}`);
+    for (const [person, role] of [
+      [member, 'project_member'],
+      [viewer, 'project_viewer'],
+      [admin, 'project_admin'],
+    ] as const)
+      expect(
+        (await call(owner).post(`/projects/${project.id}/members`, { userId: person.id, projectRole: role }))
+          .status,
+      ).toBe(201);
+
+    // before: all three reach the project, and report their EXPLICIT role
+    const roleBefore = async (person: Person) => {
+      const response = await call(person).get(`/projects/${project.id}`);
+      expect(response.status).toBe(200);
+      return projectSchema.parse(response.body).projectRole;
+    };
+    expect([await roleBefore(member), await roleBefore(viewer), await roleBefore(admin)]).toEqual([
+      'project_member',
+      'project_viewer',
+      'project_admin',
+    ]);
+
+    for (const person of [member, viewer, admin])
+      expect((await call(owner).delete(`/projects/${project.id}/members/${person.id}`)).status).toBe(204);
+    for (const person of [member, viewer, admin])
+      // only the explicit rows went; the organization memberships are untouched
+      expect(
+        await h.inspector.membership.count({ where: { organizationId: organization, userId: person.id } }),
+      ).toBe(1);
+
+    // A. an organization member and viewer: no explicit membership and no implicit access = the project no longer exists for them
+    for (const person of [member, viewer]) {
+      for (const response of [
+        await call(person).get(`/projects/${project.id}`),
+        await call(person).get(`/projects/${project.id}/members`),
+        await call(person).patch(`/projects/${project.id}`, { name: 'Nope' }),
+      ]) {
+        expect(response.status).toBe(404);
+        expect(errorOf(response.body).code).toBe('project_not_found');
+      }
+      const list = await call(person).get(`/projects?organizationId=${organization}`);
+      expect(list.status).toBe(200);
+      expect(pageOfProjects.parse(list.body)).toMatchObject({ items: [], page: { total: 0 } });
+    }
+
+    // B. an organization admin: implicit access through the organization role, with no explicit role to report
+    const read = await call(admin).get(`/projects/${project.id}`);
+    expect(read.status).toBe(200);
+    expect(projectSchema.parse(read.body).projectRole).toBeNull();
+    expect((await call(admin).patch(`/projects/${project.id}`, { name: 'Implicit admin' })).status).toBe(200);
+    expect(
+      pageOfProjects
+        .parse((await call(admin).get(`/projects?organizationId=${organization}`)).body)
+        .items.map((item) => [item.id, item.projectRole]),
+    ).toEqual([[project.id, null]]);
+
+    // organization-level permissions are still exactly those of the organization role
+    expect(
+      (await call(admin).patch(`/organizations/${organization}`, { name: 'Renamed by the admin' })).status,
+    ).toBe(200); // admin: organization.update
+    const viewerCreate = await call(viewer).post('/projects', {
+      organizationId: organization,
+      name: 'V',
+      slug: `x3v-${uid()}`,
+    });
+    expect([viewerCreate.status, errorOf(viewerCreate.body).code]).toEqual([403, 'forbidden']); // viewer: no project.create
+    expect(
+      (
+        await call(member).post('/projects', {
+          organizationId: organization,
+          name: 'M',
+          slug: `x3m-${uid()}`,
+        })
+      ).status,
+    ).toBe(201); // member: project.create
+    expect((await call(viewer).get(`/organizations/${organization}`)).status).toBe(200);
+    expect((await call(member).patch(`/organizations/${organization}`, { name: 'Taken' })).status).toBe(403);
+  });
+});
