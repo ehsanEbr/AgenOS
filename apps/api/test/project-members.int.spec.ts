@@ -826,28 +826,104 @@ describe('races between project memberships and organization memberships (real c
     expect(removals.map((response) => response.status).sort()).toEqual([204, 404, 404, 404, 404]);
   });
 
-  it(`archive racing an add: a member is never added to an archived project (${ROUNDS} rounds)`, async () => {
-    const [owner, target] = [await h.signUp('ap-owner'), await h.signUp('ap-target')];
+  it('archive versus add (deterministic): an add in flight makes the archive WAIT, and an archive in flight makes the add WAIT and then be refused', async () => {
+    const [owner, target, other] = [
+      await h.signUp('ad-owner'),
+      await h.signUp('ad-target'),
+      await h.signUp('ad-other'),
+    ];
     const organization = await h.createOrganization(owner);
     await h.addOrganizationMember(owner, organization, target, 'member');
+    await h.addOrganizationMember(owner, organization, other, 'member');
+
+    // 1. the add holds the project lock and is held before it commits: the archive must wait for it
+    const first = await newProject(owner, organization);
+    const addGate = gateOn('project_member.added');
+    const addApp = await h.createApp(addGate.options);
+    try {
+      const add = h
+        .as(owner.token, addApp)
+        .post(`/projects/${first.id}/members`, { userId: target.id, projectRole: 'project_member' })
+        .then((response) => response);
+      await addGate.hasReached;
+      let archiveDone = false;
+      const archive = call(owner)
+        .post(`/projects/${first.id}/archive`)
+        .then((response) => {
+          archiveDone = true;
+          return response;
+        });
+      await sleep(600);
+      expect(archiveDone).toBe(false); // waiting for the project lock the add holds
+      addGate.release();
+      expect([(await add).status, (await archive).status]).toEqual([201, 200]); // the add landed BEFORE the archive
+      expect((await memberRows(first.id)).some((row) => row.userId === target.id)).toBe(true);
+    } finally {
+      addGate.release();
+      await addApp.close();
+    }
+
+    // 2. the archive holds the project lock and is held before it commits: the add must wait, then find the project archived
+    const second = await newProject(owner, organization);
+    const archiveGate = gateOn('project.archived');
+    const archiveApp = await h.createApp(archiveGate.options);
+    try {
+      const archive = h
+        .as(owner.token, archiveApp)
+        .post(`/projects/${second.id}/archive`)
+        .then((response) => response);
+      await archiveGate.hasReached;
+      let addDone = false;
+      const add = addMember(owner, second.id, other.id).then((response) => {
+        addDone = true;
+        return response;
+      });
+      await sleep(600);
+      expect(addDone).toBe(false); // waiting for the project lock the archive holds
+      archiveGate.release();
+      const [archived, added] = [await archive, await add];
+      expect([archived.status, added.status, errorOf(added.body).code]).toEqual([
+        200,
+        409,
+        'project_archived',
+      ]);
+      expect((await memberRows(second.id)).some((row) => row.userId === other.id)).toBe(false); // never added to an archived project
+    } finally {
+      archiveGate.release();
+      await archiveApp.close();
+    }
+  });
+
+  it(`archive racing an add: the outcomes agree with each other and nobody is added once the project is archived (${ROUNDS} rounds)`, async () => {
+    const [owner, target, late] = [
+      await h.signUp('ap-owner'),
+      await h.signUp('ap-target'),
+      await h.signUp('ap-late'),
+    ];
+    const organization = await h.createOrganization(owner);
+    await h.addOrganizationMember(owner, organization, target, 'member');
+    await h.addOrganizationMember(owner, organization, late, 'member');
     for (let round = 0; round < ROUNDS; round += 1) {
       const project = await newProject(owner, organization);
       const [added, archived] = await Promise.all([
         addMember(owner, project.id, target.id),
         call(owner).post(`/projects/${project.id}/archive`),
       ]);
-      expect(archived.status).toBe(200);
-      expect([201, 409], `round ${round}`).toContain(added.status);
-      const row = await h.inspector.project.findUniqueOrThrow({ where: { id: project.id } });
+      const detail = `round ${round}: add ${added.status} ${JSON.stringify(added.body).slice(0, 120)}, archive ${archived.status}`;
+      expect(archived.status, detail).toBe(200);
+      expect([201, 409], detail).toContain(added.status);
       const member = (await memberRows(project.id)).find((entry) => entry.userId === target.id);
-      expect(row.status).toBe('archived');
-      if (member) {
-        // the add won the lock: its row must have been written BEFORE the project was archived
-        expect(member.createdAt.getTime()).toBeLessThanOrEqual(row.archivedAt!.getTime());
-        expect(added.status).toBe(201);
-      } else {
-        expect(added.status).toBe(409); // archived first: refused
-      }
+      const addedEvents = (await auditFor(project.id)).filter(
+        (entry) =>
+          entry.action === 'project_member.added' &&
+          (entry.metadata as { origin: string }).origin === 'added',
+      );
+      // consistent whichever won: a 201 left exactly one row and one event, a 409 left neither (no clock is compared)
+      expect(Boolean(member), detail).toBe(added.status === 201);
+      expect(addedEvents.length, detail).toBe(added.status === 201 ? 1 : 0);
+      // and once the archive is visible nobody can be added any more
+      const afterwards = await addMember(owner, project.id, late.id);
+      expect([afterwards.status, errorOf(afterwards.body).code], detail).toEqual([409, 'project_archived']);
     }
   });
 
