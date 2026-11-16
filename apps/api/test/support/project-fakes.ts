@@ -7,8 +7,13 @@ import type {
   ProjectMemberRepository,
   ProjectRepository,
   ProjectStatusFilter,
+  RemovedProjectMembership,
 } from '../../src/modules/projects/application/ports';
-import { projectSlugTaken } from '../../src/modules/projects/application/errors';
+import {
+  alreadyProjectMember,
+  projectMemberNotFound,
+  projectSlugTaken,
+} from '../../src/modules/projects/application/errors';
 import type {
   ProjectMemberRecord,
   ProjectRecord,
@@ -142,6 +147,49 @@ export class InMemoryProjectMembers implements ProjectMemberRepository {
     return this.rows.find((row) => row.projectId === projectId && row.userId === userId)?.role ?? null;
   }
 
+  list(scope: ProjectScope, page: PageRequest): Promise<PageOf<ProjectMemberRecord>> {
+    const { projectId } = requireProjectScope(scope);
+    const all = this.rows.filter((row) => row.projectId === projectId);
+    return Promise.resolve({ total: all.length, items: all.slice(page.offset, page.offset + page.limit) });
+  }
+  find(scope: ProjectScope, userId: string) {
+    const { projectId } = requireProjectScope(scope);
+    return Promise.resolve(
+      this.rows.find((row) => row.projectId === projectId && row.userId === userId) ?? null,
+    );
+  }
+  add(scope: ProjectScope, member: { userId: string; role: ProjectRole }) {
+    const { organizationId, projectId } = requireProjectScope(scope);
+    if (this.rows.some((row) => row.projectId === projectId && row.userId === member.userId))
+      return Promise.reject(alreadyProjectMember());
+    const project = { id: projectId, organizationId } as ProjectRecord;
+    return Promise.resolve(this.insert(project, member.userId, member.role));
+  }
+  setRole(scope: ProjectScope, userId: string, role: ProjectRole) {
+    const { projectId } = requireProjectScope(scope);
+    const index = this.rows.findIndex((row) => row.projectId === projectId && row.userId === userId);
+    if (index === -1) return Promise.reject(projectMemberNotFound());
+    this.rows[index] = { ...this.rows[index]!, role };
+    return Promise.resolve(this.rows[index]!);
+  }
+  remove(scope: ProjectScope, userId: string) {
+    const { projectId } = requireProjectScope(scope);
+    const index = this.rows.findIndex((row) => row.projectId === projectId && row.userId === userId);
+    if (index === -1) return Promise.resolve(false);
+    this.rows.splice(index, 1);
+    return Promise.resolve(true);
+  }
+  deleteAllOfUserInOrganization(organizationId: string, userId: string): Promise<RemovedProjectMembership[]> {
+    const removed: RemovedProjectMembership[] = [];
+    for (let index = this.rows.length - 1; index >= 0; index -= 1) {
+      const row = this.rows[index]!;
+      if (row.organizationId === organizationId && row.userId === userId) {
+        removed.unshift({ id: row.id, projectId: row.projectId, role: row.role });
+        this.rows.splice(index, 1);
+      }
+    }
+    return Promise.resolve(removed);
+  }
   findRoleOn(project: ProjectRecord, userId: string) {
     return Promise.resolve(
       this.rows.find(

@@ -76,7 +76,45 @@ export interface ProjectRepository {
   setArchived(scope: ProjectScope, archivedAt: Date | null, db: DatabaseClient): Promise<ProjectRecord>;
 }
 
+/** A project membership removed by the cleanup after an organization membership ended (kept for the audit event). */
+export interface RemovedProjectMembership {
+  readonly id: string;
+  readonly projectId: string;
+  readonly role: ProjectRole;
+}
+
 export interface ProjectMemberRepository {
+  list(scope: ProjectScope, page: PageRequest, db?: DatabaseClient): Promise<PageOf<ProjectMemberRecord>>;
+  find(scope: ProjectScope, userId: string, db?: DatabaseClient): Promise<ProjectMemberRecord | null>;
+  /**
+   * Throws `AppError('conflict', 'already_project_member')` on a second membership of the same user, and
+   * `AppError('not_found', 'organization_member_not_found')` when the user is not (any more) a member of the project's organization:
+   * the composite foreign key is the guarantee behind the held pre-check.
+   */
+  add(
+    scope: ProjectScope,
+    member: { readonly userId: string; readonly role: ProjectRole },
+    db: DatabaseClient,
+  ): Promise<ProjectMemberRecord>;
+  /** Throws `AppError('not_found', 'project_member_not_found')` if the row is gone (removed by a concurrent cleanup). */
+  setRole(
+    scope: ProjectScope,
+    userId: string,
+    role: ProjectRole,
+    db: DatabaseClient,
+  ): Promise<ProjectMemberRecord>;
+  /** True when a membership was removed. */
+  remove(scope: ProjectScope, userId: string, db: DatabaseClient): Promise<boolean>;
+  /**
+   * SYSTEM CLEANUP (not scoped, named on purpose): deletes every project membership of a user within an organization, in one statement,
+   * and returns what it deleted. Used only by the removal participant, which is called by the organizations module with the ids of the
+   * membership it is removing. Takes no project lock (ADR-0011 decision 9, rule R3).
+   */
+  deleteAllOfUserInOrganization(
+    organizationId: string,
+    userId: string,
+    db: DatabaseClient,
+  ): Promise<RemovedProjectMembership[]>;
   /**
    * RESOLUTION (not scoped): the explicit role of a user on a project that was just read from the database, or null. The project is
    * passed as a record, not as raw ids, and the query filters by project, organization and user.

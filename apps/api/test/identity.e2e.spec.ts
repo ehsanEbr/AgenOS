@@ -107,12 +107,14 @@ describe('authentication is the default', () => {
     expect(protectedRoutes.sort()).toEqual(
       [
         'DELETE /organizations/:organizationId/members/:userId',
+        'DELETE /projects/:projectId/members/:userId',
         'GET /me',
         'GET /organizations',
         'GET /organizations/:organizationId',
         'GET /organizations/:organizationId/members',
         'GET /projects',
         'GET /projects/:projectId',
+        'GET /projects/:projectId/members',
         'PATCH /organizations/:organizationId',
         'PATCH /organizations/:organizationId/members/:userId',
         'POST /auth/logout',
@@ -120,9 +122,11 @@ describe('authentication is the default', () => {
         'POST /me/password',
         'POST /organizations',
         'PATCH /projects/:projectId',
+        'PATCH /projects/:projectId/members/:userId',
         'POST /organizations/:organizationId/members',
         'POST /projects',
         'POST /projects/:projectId/archive',
+        'POST /projects/:projectId/members',
         'POST /projects/:projectId/restore',
       ].sort(),
     );

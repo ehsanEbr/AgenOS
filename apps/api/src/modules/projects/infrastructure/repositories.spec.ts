@@ -51,6 +51,13 @@ describe('project repositories fail closed', () => {
   ];
 
   // Every method that takes an organization scope / a project scope, with a representative call. A new scoped method must be added here.
+  const memberScoped: [string, (scope: never) => Promise<unknown>][] = [
+    ['ProjectMemberRepository.list', (s) => members.list(s, page, client)],
+    ['ProjectMemberRepository.find', (s) => members.find(s, user, client)],
+    ['ProjectMemberRepository.add', (s) => members.add(s, { userId: user, role: 'project_viewer' }, client)],
+    ['ProjectMemberRepository.setRole', (s) => members.setRole(s, user, 'project_admin', client)],
+    ['ProjectMemberRepository.remove', (s) => members.remove(s, user, client)],
+  ];
   const organizationScoped: [string, (scope: never) => Promise<unknown>][] = [
     [
       'ProjectRepository.createWithCreator',
@@ -71,7 +78,7 @@ describe('project repositories fail closed', () => {
         expect(touched).toEqual([]);
       });
 
-  for (const [name, call] of projectScoped)
+  for (const [name, call] of [...projectScoped, ...memberScoped])
     for (const [label, scope] of badProjectScopes)
       it(`${name} rejects ${label} without issuing a query`, async () => {
         await expect(call(scope as never)).rejects.toThrow(/ProjectScope/);
@@ -101,19 +108,16 @@ describe('project repositories fail closed', () => {
     expect(touched).toEqual([]);
   });
 
-  it('covers every method of the project repository except the two named resolution methods', () => {
-    const methods = Object.getOwnPropertyNames(PrismaProjectRepository.prototype).filter(
-      (name) => name !== 'constructor',
+  it('covers every scoped method of both repositories; only the named resolution and cleanup methods take no scope', () => {
+    const methodsOf = (repository: object) =>
+      Object.getOwnPropertyNames(Object.getPrototypeOf(repository)).filter((name) => name !== 'constructor');
+    // RESOLUTION methods are how a context is earned; CLEANUP is called by the organizations module with the ids of the membership it removes.
+    const unscoped = ['findInOrganizations', 'findRoleOn', 'deleteAllOfUserInOrganization'];
+    const covered = [...organizationScoped, ...projectScoped, ...memberScoped].map(
+      ([name]) => name.split('.')[1],
     );
-    const resolution = ['findInOrganizations'];
-    const covered = [...organizationScoped, ...projectScoped].map(([name]) => name.split('.')[1]);
-    expect(methods.filter((name) => !resolution.includes(name)).sort()).toEqual([...covered].sort());
-    // and the member repository's only method so far is the named resolution method (S5 adds scoped ones and extends this list)
     expect(
-      Object.getOwnPropertyNames(PrismaProjectMemberRepository.prototype).filter(
-        (name) => name !== 'constructor',
-      ),
-    ).toEqual(['findRoleOn']);
-    expect(members).toBeDefined();
+      [...methodsOf(projects), ...methodsOf(members)].filter((name) => !unscoped.includes(name)).sort(),
+    ).toEqual([...covered].sort());
   });
 });

@@ -107,6 +107,10 @@ const PERMISSION_GATED: Record<string, string> = {
   'PATCH /projects/:projectId': 'project.update',
   'POST /projects/:projectId/archive': 'project.archive',
   'POST /projects/:projectId/restore': 'project.archive',
+  'GET /projects/:projectId/members': 'project.read',
+  'POST /projects/:projectId/members': 'project.member.manage',
+  'PATCH /projects/:projectId/members/:userId': 'project.member.manage',
+  'DELETE /projects/:projectId/members/:userId': 'project.member.manage',
 };
 
 /** How each `/projects` route reaches its tenant: through the project id, or through an organization selector and where it is. */
@@ -117,6 +121,10 @@ const PROJECT_ROUTE_KIND: Record<string, string> = {
   'PATCH /projects/:projectId': 'project',
   'POST /projects/:projectId/archive': 'project',
   'POST /projects/:projectId/restore': 'project',
+  'GET /projects/:projectId/members': 'project',
+  'POST /projects/:projectId/members': 'project',
+  'PATCH /projects/:projectId/members/:userId': 'project',
+  'DELETE /projects/:projectId/members/:userId': 'project',
 };
 
 describe('every route declares how it is protected', () => {
