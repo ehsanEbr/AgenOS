@@ -1,8 +1,8 @@
 # ADR-0011: Projects and project members (Phase 2.3)
 
-**Status:** Proposed. Revision 2 of the design was approved in principle and has been **implemented in step 2.3** on the branch
-`phase-2.3-projects-project-members`; the implementation is awaiting review, so this ADR is **not** yet Accepted. See "Implementation
-status (step 2.3)" at the end for what was built, what was found and what differs from the text.
+**Status:** Accepted (revision 2, implemented in step 2.3 and merged to `main` in PR #5, merge commit `da582f5`; accepted after the
+implementation review and the post-merge verification). See "Implementation status (step 2.3)" at the end for what was built, what
+was found and what differs from the text.
 **Context:** [ADR-0010](0010-identity-organizations-projects.md) (Accepted) fixed the architecture of Phase 2 and delivers it in four
 reviewed steps. Steps 2.1 (identity, authentication, sessions, audit) and 2.2 (organizations, memberships, tenant isolation,
 authorization) are merged (`main` at `7db426f`). This ADR designs step 2.3: the `projects` module, its two tables, its API and its
@@ -838,7 +838,7 @@ Questions Q1 to Q3, Q7 to Q9, Q11 and Q12 of revision 1 were settled by the revi
 
 ## Implementation status (step 2.3)
 
-**Implemented on branch `phase-2.3-projects-project-members`, pending review. This ADR stays `Proposed` until that review is complete.**
+**Implemented on branch `phase-2.3-projects-project-members` and merged to `main` in PR #5 (merge commit `da582f5`). The implementation review is complete and this ADR is `Accepted`.**
 Everything in decisions 1 to 12 was built as designed, with the places below where the implementation settled a detail, found something,
 or differs from the wording. The four additive ADR-0010 amendments are recorded as its implementation notes 36 to 39.
 
