@@ -1,8 +1,11 @@
 # ADR-0011: Projects and project members (Phase 2.3)
 
-**Status:** Accepted (revision 2, implemented in step 2.3 and merged to `main` in PR #5, merge commit `da582f5`; accepted after the
-implementation review and the post-merge verification). See "Implementation status (step 2.3)" at the end for what was built, what
-was found and what differs from the text.
+**Status:** Accepted (revision 3; accepted after the implementation review and the post-merge verification).
+**Revisions:** 1 = the proposed design. 2 = the design after the architectural review, approved and implemented in step 2.3 (merged to
+`main` in PR #5, merge commit `da582f5`). 3 = a documentation reconciliation after the implementation: the open questions are marked
+resolved and the statements about ADR-0010 are brought up to date. **No decision, rationale, lock order, guarantee or limitation
+changed in revision 3.** See "Implementation status (step 2.3)" at the end for what was built, what was found and what differs from the
+text.
 **Context:** [ADR-0010](0010-identity-organizations-projects.md) (Accepted) fixed the architecture of Phase 2 and delivers it in four
 reviewed steps. Steps 2.1 (identity, authentication, sessions, audit) and 2.2 (organizations, memberships, tenant isolation,
 authorization) are merged (`main` at `7db426f`). This ADR designs step 2.3: the `projects` module, its two tables, its API and its
@@ -11,9 +14,8 @@ gap, that is reported under "Findings" and decided or asked, never changed silen
 
 **Relationship to ADR-0010.** Nothing in ADR-0010 is reopened. This ADR _applies_ decisions 1 (modules), 4 (tenant isolation), 5
 (authorization and the project access policy), 6 (audit), 7 (Prisma) and 8 (API), and final decisions 1 (archive/restore, no
-deletion) and 8 (project roles and default access). Three **additive** amendments to ADR-0010 are needed and are stated exactly in
-"Amendments to ADR-0010"; they will be recorded as ADR-0010 implementation notes when the step is implemented, and ADR-0010 is not
-edited now.
+deletion) and 8 (project roles and default access). Four **additive** amendments to ADR-0010 are needed and are stated exactly in
+"Amendments to ADR-0010"; they are recorded as ADR-0010 implementation notes 36 to 39.
 
 ## What revision 2 settles
 
@@ -776,7 +778,7 @@ The steps are internal commits of one pull request; the natural review checkpoin
 
 ## Amendments to ADR-0010 (additive, exact)
 
-None is applied now; each becomes an ADR-0010 implementation note when step 2.3 is implemented (the way 2.1 and 2.2 recorded theirs).
+They are recorded as ADR-0010 implementation notes 36 to 39 (the way 2.1 and 2.2 recorded theirs).
 
 | #   | ADR-0010 text                                                                                               | Additive amendment                                                                                                                                                                                                                                                                  | Reason                                                                                                                            |
 | --- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
@@ -785,9 +787,29 @@ None is applied now; each becomes an ADR-0010 implementation note when step 2.3 
 | A3  | Decision 5, project access policy (points 1 to 5).                                                          | Adds point 6: **the end of an organization membership ends the user's project memberships in that organization, in the same transaction**; and point 7: the creator's explicit `project_admin` row survives loss of owner/admin status but not loss of the organization membership. | The ADR did not say what happens to project grants when the organization membership ends (F1); the review decided it.             |
 | A4  | 2.2 implementation note 25 (every membership change locks the owner rows).                                  | Unchanged mechanism. Adds: the **subject's** membership row is also locked `FOR UPDATE` on removal (`lockMember`), and the project side may hold only **one** membership row (R2).                                                                                                  | Part of the cross-module lock order (decision 9). Evidence E7 showed the deadlock a second held row causes.                       |
 
-## Open questions requiring explicit approval
+## Questions raised during design (all resolved)
 
-Questions Q1 to Q3, Q7 to Q9, Q11 and Q12 of revision 1 were settled by the review (see "What revision 2 settles"); Q4, Q5, Q6 and Q10 stay open. New: Q13 and Q14.
+All the design questions are resolved.
+
+- **Q1 to Q3, Q7 to Q9, Q11 and Q12** (raised in revision 1) were settled during the design review (see "What revision 2 settles").
+- **Q4, Q5, Q6 and Q10** (raised in revision 1) and **Q13 and Q14** (raised in revision 2) were explicitly decided when the
+  implementation was planned and authorized, each as recommended in the table below, and the implementation follows each decision. The
+  rows below are the questions as they were asked, unchanged; what was built and what was found are under "Implementation status
+  (step 2.3)".
+
+Two of those decisions have a limit on their evidence or on their scope, stated here so that "resolved" is not read as more than it is:
+
+- **Q5 (project self-leave).** The architectural decision is resolved: there is **no** self-leave capability in Phase 2.3. The
+  restriction is enforced by the route permission (`DELETE` on a project member needs `project.member.manage`, pinned by the
+  route-metadata test) and by the project access matrix, under which a project member and a project viewer do not hold it. There is
+  **currently no direct HTTP test** of a non-admin project member trying to remove their own membership. That is a test-coverage
+  limitation, not an unresolved architectural decision.
+- **Q10 (system test).** The API-level system test required for Phase 2.3 is implemented
+  (`tests/system/test/projects.system.spec.ts`). The browser-level end-to-end scenario that ADR-0010 assigns to step 2.4 remains in
+  Phase 2.4 scope; Phase 2.4 is neither implemented nor started.
+
+Q13 stays decided as the accepted V1 in-flight actor window (decision 9 and Implementation status S9; V2 is not implemented), and Q14
+stays exactly `409 membership_in_use` as the row below describes.
 
 | #   | Question                                                                                                                                                                                                                                                                                                                                                                                                                              | Recommendation                                                                                                                                                                                                                  |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

@@ -13,7 +13,7 @@ Platform for designing, running and observing AI agent systems. See the
 > authentication with server-side sessions (cookie or bearer token), rate limiting that fails closed, an append-only audit trail,
 > separate database roles for the API and for migrations, and organizations with memberships, four code-owned roles, tenant isolation
 > and a last-owner guarantee ([ADR-0010](docs/adr/0010-identity-organizations-projects.md)), and projects with project members, project roles
-> and visibility-first listing ([ADR-0011](docs/adr/0011-projects-and-project-members.md), proposed, implementation under review). There are
+> and visibility-first listing ([ADR-0011](docs/adr/0011-projects-and-project-members.md), accepted). There are
 > no domain jobs, web screens for them, or other product functionality yet.
 >
 > An earlier, larger Phase 1 build (including a BullMQ worker) is preserved on the git branch `phase-1-foundation`.

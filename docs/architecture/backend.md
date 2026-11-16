@@ -471,7 +471,7 @@ await this.transactions.run(async (tx) => {
 ## 13. Organizations, tenancy and authorization (Phase 2.2)
 
 `modules/organizations` owns `identity.organization` and `identity.membership` (the same PostgreSQL schema as Identity, never the same
-table). It depends on `identity` (the `Principal`, `UserDirectory`) and `audit`; nothing depends on it yet (`projects` will).
+table). It depends on `identity` (the `Principal`, `UserDirectory`) and `audit`; `projects` already depends on it (section 14).
 
 - **A client-supplied organization id is only a selector.** `TenantAccess.resolve(principal, organizationId)` accepts it if, and only
   if, the caller is a member, read from the database on that request; the result is a `TenantContext { organizationId, userId, role }`.

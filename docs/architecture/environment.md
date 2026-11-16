@@ -79,7 +79,7 @@ then provisions the roles on your existing data volume (`infrastructure/postgres
 ## Registration is closed: how to add a user
 
 The first user of an empty instance can always register (`POST /api/v1/auth/register`); the first organization is created afterwards
-through the organizations API (a later step). After that, registration is closed. There are **no invitations yet**, so to let another
+through the organizations API (`POST /api/v1/organizations`). After that, registration is closed. There are **no invitations yet**, so to let another
 person join an operator must set `AUTH_ALLOW_REGISTRATION=true`, restart the API, let that person register, and set it back to
 `false`. **While it is `true`, anyone who can reach the API can create an account**: enable it only on a trusted network and only
 for as long as needed.

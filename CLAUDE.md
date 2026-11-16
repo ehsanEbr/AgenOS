@@ -2,7 +2,7 @@
 
 AgentOS owns orchestration, intelligence, governance and the execution lifecycle. External LLM providers and agent
 frameworks are replaceable infrastructure behind adapters. Architecture: modular monolith + independent workers,
-TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation phases are complete through **1.6 System Integration & CI** (see README). Phase 2 (identity, organizations, projects; ADR-0010) is delivered step by step, each step reviewed before the next; **2.1 (authentication and sessions) 2.2 (organizations and memberships) and 2.3 (projects and project members; ADR-0011, proposed) are implemented**. Domain jobs and the API enqueuing work are later phases. Rulebooks:
+TypeScript, Nx + pnpm, NestJS, React/Vite, PostgreSQL, Redis, Prisma. Foundation phases are complete through **1.6 System Integration & CI** (see README). Phase 2 (identity, organizations, projects; ADR-0010) is delivered step by step, each step reviewed before the next; **2.1 (authentication and sessions), 2.2 (organizations and memberships) and 2.3 (projects and project members; ADR-0011, accepted) are implemented**. Domain jobs and the API enqueuing work are later phases. Rulebooks:
 `docs/architecture/backend.md` (read before touching `apps/api`), `docs/architecture/frontend.md` (read before touching `apps/web`) `docs/architecture/workers.md` (read before touching `apps/worker`, `packages/queue` or job contracts) and `docs/architecture/docker-compose.md` (read before touching Docker, Compose or process lifecycle/health).
 
 ## Rules (from the architecture spec, section 20)
