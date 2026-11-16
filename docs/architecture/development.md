@@ -105,6 +105,7 @@ The worker logs `job completed` with the job id, type and correlation id.
 | Integration           | `pnpm test:integration`                                                       | `pnpm infra:up`            | API against real PostgreSQL/Redis; worker host and **worker process** against real Redis      |
 | System                | `pnpm test:system`                                                            | Docker (builds the images) | The whole Compose stack as a black box: see below                                             |
 | Everything but system | `pnpm verify` + `pnpm test:integration`                                       | `infra:up`                 | The set CI's `verify` and `integration` jobs run                                              |
+| Browser E2E (planned) | `pnpm test:browser` (**does not exist yet**, see below)                       | Docker, Chromium           | Real-browser tests of the web UI against a throwaway stack (ADR-0012, Phase 2.4 step 7)       |
 
 - **Run one file:** `pnpm --filter @agentos/worker exec vitest run src/health.spec.ts`; integration:
   `pnpm --filter @agentos/worker exec vitest run --config vitest.integration.config.ts test/timeout.int.spec.ts`.
@@ -128,6 +129,12 @@ The worker logs `job completed` with the job id, type and correlation id.
   | `identity.system.spec.ts`      | Authentication through the web proxy: tables owned by the migration role, the API role's exact privileges, bootstrap and closed registration, cookie sign-in and CSRF, **Redis lost: new sign-ins 503, existing sessions keep working**, the audit trail (the API role cannot read, change or empty it), per-account rate limiting |
   | `worker-stuck.system.spec.ts`  | A handler that ignores its abort signal, under the real supervisor: restarts are bounded and BullMQ fails the poison job                                                                                                                                                                                                           |
 
+- **Browser E2E (planned; accepted in [ADR-0012](../adr/0012-phase-2-4-web-ui-foundations.md), not available yet).** From Phase 2.4 step 7,
+  `pnpm test:browser` will run Playwright (Chromium only) against a throwaway Compose project of the same harness as the system tests, with
+  its own `agentos-systest-<id>` name, ports and generated credentials. It needs Docker and a one-time Chromium download by an explicit
+  `playwright install` step (not part of `pnpm install`; confirmed when the dependency is added). The browser must open
+  `http://localhost:<port>`, not `127.0.0.1`, because the API accepts only the configured `WEB_ORIGIN`. CI runs it on Linux only, in its own
+  job; on Windows you may run it locally after installing Chromium, but Windows CI never does. Until then the command does not exist.
 - **Do not use `docker kill`/`docker stop` to simulate a crash** in your own tests: Docker treats them as a manual stop and never
   applies the restart policy. Signal the process inside the container (`Stack.signalWorkerProcess`).
 - A failing system test leaves nothing behind (cleanup runs in `afterAll`); if a run is aborted, list leftovers with

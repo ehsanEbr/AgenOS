@@ -1,6 +1,6 @@
 # ADR-0012: Web UI foundations for projects (Phase 2.4): browser E2E, organization context, permission helper, session handling
 
-**Status:** Accepted (revision 5, approved at commit `4cd0c89`; decisions D1 to D5 are accepted, nothing is implemented yet: no code, test, dependency, manifest, lockfile or workflow was changed, and implementation proceeds in the steps of "Proposed implementation sequence", each reviewed before the next).
+**Status:** Accepted (revision 5, approved at commit `4cd0c89`; decisions D1 to D5 are accepted, nothing is implemented yet: no code, test, dependency, manifest, lockfile or workflow was changed, and implementation proceeds in the steps of "Implementation sequence", each reviewed before the next).
 **Date:** 2026-11-16
 **Revisions:** 1 = the first proposal. 2 = the review's corrections: the session and cache lifecycle of D4 is specified exactly (the session
 entry is never removed by cleanup), the nested routes of D2 are recorded as approved, and the open items are separated into accepted
@@ -568,23 +568,23 @@ PR #5 was a one-second default under load), never fixed sleeps, and lazy routes 
 
 ## Conflicts with the existing architecture and documents
 
-| Item                                                                                     | Status                                                                                                             |
-| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| ADR-0005 decision 8: "No browser end-to-end framework"                                   | **Narrowed by D1** (scoped supersession; ADR-0005 text unchanged). `apps/web` still has no browser framework.      |
-| `ci.md` "Not included (by decision): browser/E2E tests"; `frontend.md` sections 9 and 12 | Out of date once this ADR is accepted; updated then (not now, so the documents describe what exists).              |
-| ADR-0010 decision 9: "the active organization is a browser preference"                   | **Refined by D2** for the client only; the server-side meaning is untouched.                                       |
-| ADR-0010 and ADR-0011: "system scenario / browser-level scenario in step 2.4"            | **Fulfilled by D1**, with the extra tool, runner and job recorded here.                                            |
-| `routes.spec.ts` pins the navigation order and has no Projects entry                     | The implementation adds the entry and updates the test deliberately.                                               |
-| `frontend.md` "conventions only" for auth, guards, forms and tables                      | The implementation is their first real use; the guide is updated with what was learned (as the earlier steps did). |
+| Item                                                                                     | Status                                                                                                                                                    |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ADR-0005 decision 8: "No browser end-to-end framework"                                   | **Narrowed by D1** (scoped supersession; ADR-0005 text unchanged). `apps/web` still has no browser framework.                                             |
+| `ci.md` "Not included (by decision): browser/E2E tests"; `frontend.md` sections 9 and 12 | Out of date once this ADR was accepted; updated after acceptance, as accepted and planned (not as existing), so the documents still describe what exists. |
+| ADR-0010 decision 9: "the active organization is a browser preference"                   | **Refined by D2** for the client only; the server-side meaning is untouched.                                                                              |
+| ADR-0010 and ADR-0011: "system scenario / browser-level scenario in step 2.4"            | **Fulfilled by D1**, with the extra tool, runner and job recorded here.                                                                                   |
+| `routes.spec.ts` pins the navigation order and has no Projects entry                     | The implementation adds the entry and updates the test deliberately.                                                                                      |
+| `frontend.md` "conventions only" for auth, guards, forms and tables                      | The implementation is their first real use; the guide is updated with what was learned (as the earlier steps did).                                        |
 
 No conflict with the layer rules, the tenancy rules (CLAUDE.md "Tenancy and authorization", "Projects"), or the API contracts. No Phase 2.3
 backend contract needs to change.
 
-## Proposed implementation sequence (indicative; each step is reviewed before the next, none is approved yet)
+## Implementation sequence (accepted with this ADR as the plan; each step needs its own review and approval before it starts, none has started)
 
 | Step | Scope                                                                                                                                          |
 | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0    | This ADR reviewed and accepted; documentation updates listed below.                                                                            |
+| 0    | This ADR reviewed and accepted (done, commit `8ca0858`); the documentation updates listed below (done in the documentation follow-up).         |
 | 1    | Foundations: the two cache handlers and their tests, the Projects navigation entry and its test, a larger async default in the web test setup. |
 | 2    | `features/auth`: session query, `RequireAuth`, sign-in/sign-up, user menu, sign-out.                                                           |
 | 3    | `features/organizations`: list, create the first organization, switcher, the `/projects` redirect and the preference.                          |
@@ -597,7 +597,7 @@ Each step ends with `pnpm verify`; the browser step also runs `pnpm test:browser
 
 ## Open implementation questions
 
-These are **not architectural decisions** and nothing above assumes their answer. None blocks acceptance of the ADR. Each is settled
+These are **not architectural decisions** and nothing above assumes their answer. None blocked acceptance of the ADR. Each is settled
 during the implementation step named, reported with its evidence, and, if the answer changes a decision, brought back as an ADR change.
 
 | #   | Question                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Settled in |
@@ -618,11 +618,11 @@ Conditions that must hold before the Phase 2.4 UI is released or step 7 is accep
 - The Playwright scenario of the testing strategy passes in the `browser` job on Linux, and `pnpm verify` passes, on the commit that is
   proposed for merging.
 
-## Documentation that follows (not done in this step)
+## Documentation that follows (done after acceptance)
 
-- On acceptance: `ci.md` (new job, browser tests no longer "not included"), `frontend.md` (E2E, routes, session handling, permission helper),
+- On acceptance (done in the documentation follow-up): `ci.md` (new job, browser tests no longer "not included"), `frontend.md` (E2E, routes, session handling, permission helper),
   `development.md` (running `pnpm test:browser` locally), the README phase line.
-- **ADR-0010 implementation note (proposed text, to be added when this ADR is accepted):** "Note 40. Decision 9, _the active
+- **ADR-0010 implementation note (added to ADR-0010 after acceptance; this is its text):** "Note 40. Decision 9, _the active
   organization is a browser preference_: refined for the client by [ADR-0012](0012-phase-2-4-web-ui-foundations.md) D2. The web app
   addresses organization-scoped pages by `/organizations/:organizationId/...`; the last-used organization is kept only to choose the
   first redirect and is validated before use. The server is unchanged: the organization id remains a selector validated on every request."

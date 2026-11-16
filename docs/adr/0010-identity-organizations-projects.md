@@ -613,3 +613,13 @@ decision above is reopened. [ADR-0011](0011-projects-and-project-members.md) hol
 | 37  | **A2.** Decision 1, dependency diagram: `projects → identity (Principal only)`. | `projects` also imports `UserDirectory.findByIds` through `identity/index.ts`, to return the email and display name of project members.                                                                                                                                                                                                                                                                                                                                                                                                   |
 | 38  | **A3.** Decision 5, project access policy (points 1 to 5).                      | Point 6: **the end of an organization membership ends the user's project memberships in that organization, in the same transaction** (the removal participant, ADR-0011 decision 3). Point 7: the creator's explicit `project_admin` row survives the loss of owner/admin status but not the loss of the organization membership.                                                                                                                                                                                                         |
 | 39  | **A4.** Note 25: every membership change locks the owner rows first.            | The mechanism is unchanged. Added: removing a membership also locks the **removed member's** row `FOR UPDATE` before the participants run (`lockMember`), and a foreign-key violation on the final delete is answered `409 membership_in_use` (new code in `ORGANIZATION_ERROR_CODES`) instead of a 500. The project side may hold **one** organization-membership row at a time (the target or the creator, never the actor): a stress test guards against the deadlock a second held row causes.                                        |
+
+## Implementation notes (step 2.4: refinement recorded by ADR-0012)
+
+Recorded when [ADR-0012](0012-phase-2-4-web-ui-foundations.md) was accepted, before step 2.4 is implemented. A refinement of the
+client only; no decision above is reopened.
+
+**Note 40.** Decision 9, _the active organization is a browser preference_: refined for the client by
+[ADR-0012](0012-phase-2-4-web-ui-foundations.md) D2. The web app addresses organization-scoped pages by
+`/organizations/:organizationId/...`; the last-used organization is kept only to choose the first redirect and is validated before use.
+The server is unchanged: the organization id remains a selector validated on every request.

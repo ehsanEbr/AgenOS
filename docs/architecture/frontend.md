@@ -3,7 +3,9 @@
 The rulebook for `apps/web`: React 19, Vite 7, Ant Design 6, React Router 7, TanStack Query 5, Zustand 5, i18next, Zod
 contracts shared with the API. Rules marked **[enforced]** fail `pnpm lint`; the rest are conventions reviewers check.
 Decisions and reasons: [ADR-0005](../adr/0005-frontend-architecture.md). The API this app talks to follows
-[backend.md](backend.md) (error shape, pagination, correlation ids).
+[backend.md](backend.md) (error shape, pagination, correlation ids). The accepted design for the first real feature (sign-in,
+organizations, projects) is [ADR-0012](../adr/0012-phase-2-4-web-ui-foundations.md), summarized in section 13; it is **not implemented yet**,
+and sections 1 to 12 describe what exists.
 
 ## 1. Directory structure
 
@@ -113,7 +115,7 @@ children: [...homeRoutes, ...agentsRoutes, { path: '*', element: <NotFoundPage /
   When a feature lands: add its routes and flip the status.
 - **Authentication later:** insert a pathless route between the shell's children and the feature routes, for example
   `{ element: <RequireAuth />, children: [...featureRoutes] }` (a component rendering `<Outlet/>` or redirecting, or a `loader` that
-  throws a redirect). Public pages such as sign-in stay outside it. The table's shape does not change. Not implemented yet.
+  throws a redirect). Public pages such as sign-in stay outside it. The table's shape does not change. Not implemented yet; the accepted design is in section 13.
 
 ## 4. Design system and themes
 
@@ -318,7 +320,7 @@ Helpers (`src/test`):
 Conventions: query by **role and accessible name** (`getByRole('navigation', { name: 'Main navigation' })`), then text; never by Ant Design class names or
 DOM structure (the only exceptions assert direction: `-rtl` modifiers, drawer placement). Test behavior a user or screen reader can perceive, not
 implementation (no asserting on hook internals or re-render counts). Use `findBy*`/`waitFor` for async UI, not fixed sleeps. Each feature tests: its states
-(loading/empty/error/success), its hooks' retry behavior if it is non-default, and its route. No browser end-to-end framework is used (ADR-0005).
+(loading/empty/error/success), its hooks' retry behavior if it is non-default, and its route. No browser end-to-end framework is used in `apps/web` (ADR-0005); system-level browser tests in `tests/system` are accepted and planned (ADR-0012, section 13).
 
 ## 10. Performance and accessibility
 
@@ -353,12 +355,64 @@ Reviewer checklist: public surface only via `index.ts`; no `fetch`/`import.meta.
 ## 12. Known limitations
 
 - **No automated test of real layout.** jsdom cannot show layout, painting or font rendering. RTL/dark/responsive behavior was verified once in real Chrome (computed
-  positions, screenshots, keyboard) with a throwaway script outside the repo; there is no browser test in CI by design (ADR-0005). Regressions in visual layout would not be caught automatically.
+  positions, screenshots, keyboard) with a throwaway script outside the repo; there is no browser test in CI yet (ADR-0005; the Linux-only browser job of ADR-0012 is accepted and planned, see section 13). Regressions in visual layout would not be caught automatically.
 - **Only Chrome was used for that check;** Firefox and Safari were not exercised (Ant Design 6 and the CSS used target current evergreen browsers).
-- **Persian translations were written for this phase's few strings** and have not been reviewed by a native-speaking editor; terminology (for example "MCP Gateway") should be reviewed before release.
+- **Persian translations were written for this phase's few strings** and have not been reviewed by a native-speaking editor; terminology (for example "MCP Gateway") should be reviewed before release. ADR-0012 makes a native-speaker review of the Persian text and RTL layout a release criterion of the Phase 2.4 UI.
 - **No webfont is bundled:** Persian uses the first installed of Vazirmatn/Segoe UI/Tahoma/Noto Sans Arabic. Rendering therefore differs by operating system until a font is shipped.
 - **Dictionaries are bundled** into the main chunk (small today, not measured separately). Lazy-loading per-namespace dictionaries will be needed when feature text grows.
-- **Authentication, authorization guards, forms and tables are conventions only**; nothing in the repo implements them yet. The conventions have not been exercised by a real feature.
+- **Authentication, authorization guards, forms and tables are conventions only**; nothing in the repo implements them yet. The conventions have not been exercised by a real feature; ADR-0012 (section 13) is the accepted design for their first use.
 - **Directional icons and RTL date/number formatting** are documented rules; no feature uses them yet, so they are untested.
 - **The initial bundle (~430 kB gzipped) is dominated by Ant Design**; no budget or analysis tooling is wired into CI.
 - **Contrast of the custom palette** (indigo primary, status colors) was chosen for accessibility but not measured with a tool.
+
+## 13. Accepted design for the first real feature: sign-in, organizations, projects ([ADR-0012](../adr/0012-phase-2-4-web-ui-foundations.md))
+
+**Not implemented yet.** Everything here is an accepted decision of ADR-0012 for Phase 2.4, delivered step by step with a review after each;
+sections 1 to 12 describe what exists. Rules marked **[planned]** are not enforced by lint or a test until their step lands. The ADR holds the
+reasons, the evidence and the full session contract.
+
+**Routes and organization context.** The organization id in the path is the source of truth for organization-scoped pages.
+
+| Route                                                        | Page                         |
+| ------------------------------------------------------------ | ---------------------------- |
+| `/sign-in`, `/sign-up`                                       | Public, outside the shell    |
+| `/projects`                                                  | Only a redirect (see below)  |
+| `/organizations/:organizationId/projects`                    | Project list and creation    |
+| `/organizations/:organizationId/projects/:projectId`         | Project details (tab layout) |
+| `/organizations/:organizationId/projects/:projectId/members` | Project members (second tab) |
+
+- The id in the path is **URL context, not authorization**: the API still validates the selector and addresses projects by project id. A
+  project whose `organizationId` differs from the path's renders the same not-found state as `project_not_found`.
+- The **last-used organization** is a browser preference in `app/state`, used only by the `/projects` redirect; it is validated against
+  the caller's organizations before use and cleared on sign-out. It never replaces the id in the URL. Switching organization is a navigation;
+  every organization-dependent query key contains the organization id.
+
+**Feature graph.** New features `auth`, `organizations`, `projects`. `projects` imports `auth` (through its `index.ts`) and nothing else;
+`organizations` and `auth` import no feature. `projects` reads organization data (the caller's role, the members for the picker) through its
+own queries. The `/projects` redirect, the shell's organization switcher and the path builders are composed in `app/`.
+
+**Permission helper** (`features/projects/permissions.ts`). A pure function over `roleHasPermission` and `projectRoleHasPermission` from
+`@agentos/contracts` (contracts are not changed): an organization role answers every key, a project role is consulted only for
+project-scoped keys, so it can never add an organization permission. A second pure function applies the archived rule (read-only; only
+Restore remains). It decides what to **show**; the API stays authoritative and a `403`/`404` for an offered action makes the page refetch.
+It is tested against an independently written table.
+
+**Session and cache lifecycle** (summary of ADR-0012 D4).
+
+- One session entry, `['session']`, holds `authenticated | anonymous | unknown`; it is never removed. A query is private unless its key root
+  is `session` or `health`. `RequireAuth` renders its outlet (keyed by the user id) only when authenticated.
+- Every change of who is signed in runs one synchronous block: increase the generation, purge private queries if needed, publish the session,
+  set the owner. Private requests record the generation when they start; a `401` ends a session only for the current generation, in both
+  `QueryCache` and `MutationCache`. No cache callback navigates. Private requests do not run unless authenticated.
+- A sign-out with an uncertain outcome (network error, timeout, 5xx) moves to **unknown**, unmounts the private UI and completes the
+  sign-out by repeating the logout; it is never settled by a `GET /me` probe (the backend does not order a probe after a timed-out logout).
+- **[planned]** Private data is fetched only through hooks built on `useQuery`/`useInfiniteQuery`; imperative `fetchQuery`, `prefetchQuery`,
+  `ensureQueryData`, `refetchQueries` and writes with `setQueryData` are banned outside `features/auth` by lint.
+- Known limits: a reload or another tab can briefly show previously authenticated UI after a sign-out in a tab that has not yet learned of
+  it (no time bound is claimed), and cross-tab session synchronization is out of scope.
+
+**Lists.** Real `limit`/`offset` and `total` (page size at most 100); no client-side sorting or search, because the API has none. The
+project-member picker pages the organization members ("load more") and filters only the rows already loaded, saying so.
+
+**Browser E2E.** System-level Playwright tests (Chromium, Linux CI only) live in `tests/system`, not in `apps/web`; see
+[ci.md](ci.md) and [development.md](development.md). Testing Library with jsdom stays the unit, component and routing layer.

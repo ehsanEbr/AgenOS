@@ -2,7 +2,8 @@
 
 Workflows: [`ci.yml`](../../.github/workflows/ci.yml) (Linux, authoritative), [`windows.yml`](../../.github/workflows/windows.yml)
 (portability), shared setup in [`.github/actions/setup`](../../.github/actions/setup/action.yml). Decisions:
-[ADR-0009](../adr/0009-integration-and-ci.md).
+[ADR-0009](../adr/0009-integration-and-ci.md); the accepted, not yet implemented browser job:
+[ADR-0012](../adr/0012-phase-2-4-web-ui-foundations.md).
 
 > **Status of verification.** The workflows were validated statically with `actionlint`, and every command they run was executed
 > locally (on Windows and in a clean Linux container, and the Docker stack on a local Docker engine). **They have not been
@@ -37,6 +38,22 @@ flowchart LR
 Triggers: pushes to `main`, every pull request, and manual dispatch. A phase branch therefore gets CI when its pull request is
 opened (or when dispatched by hand); there is no separate push trigger for phase branches, to avoid running everything twice.
 
+### Planned: the `browser` job (accepted in ADR-0012, not implemented yet)
+
+The diagram and the table above are what exists today: there is **no** browser job. [ADR-0012](../adr/0012-phase-2-4-web-ui-foundations.md)
+accepts real-browser end-to-end tests and delivers them in Phase 2.4 step 7. The decided shape:
+
+- A new **Linux-only job `browser`** in `ci.yml` runs Playwright (`@playwright/test`, **Chromium only**) against a throwaway Compose stack,
+  through `pnpm test:browser`. The tests live in `tests/system` as their own runner entry, reusing the system-test stack harness, and are
+  separate from the Vitest system tests, which stay in the `system` job.
+- Chromium is installed **only in that job** (`playwright install --with-deps chromium`, browser cache keyed by the Playwright version).
+  The `system` job is not modified and installs no browser. **`windows.yml` is not touched**: no browser installation or execution on Windows.
+- `browser` will be added to the `needs` of `ci-result`, so the single required status still fails unless it succeeded. No
+  `continue-on-error`. Traces and screenshots are uploaded on failure only; the same leftover-project cleanup, limited to the
+  `agentos-systest-` prefix, runs `if: always()`.
+- Settled at implementation (ADR-0012 open questions): the exact Playwright version and compatibility, the Content-Security-Policy
+  decision, and whether the job builds its own images or reuses the `system` job's.
+
 ## Design points
 
 - **No duplicated verification logic.** Every step calls a root package script or Nx target (`pnpm lint`, `pnpm test:integration`,
@@ -64,8 +81,8 @@ opened (or when dispatched by hand); there is no separate push trigger for phase
   cannot run integration or system tests; it runs what needs no Docker. It is separate so a Windows-only break is labelled as such
   and so it can be made required or advisory independently. _Recommendation:_ require `CI result`; add `Windows portability`
   as required once it has proven stable.
-- **Not included (by decision):** macOS, a Node version matrix (one supported major, pinned), browser/E2E tests (no framework in
-  this phase), image publishing, deployment.
+- **Not included (by decision):** macOS, a Node version matrix (one supported major, pinned), browser/E2E tests (none exist yet; the
+  Linux-only `browser` job of ADR-0012 is accepted and planned, see above), image publishing, deployment.
 
 ## Running the same checks locally
 
