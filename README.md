@@ -86,6 +86,7 @@ details: [docs/architecture/infrastructure.md](docs/architecture/infrastructure.
 | `pnpm test`                                                                | Unit and in-process e2e tests (no infrastructure needed)                                      |
 | `pnpm test:integration`                                                    | Tests against real PostgreSQL + Redis, incl. the worker process (needs `pnpm infra:up`)       |
 | `pnpm test:system`                                                         | Docker system tests: the full stack as a black box (builds images; needs Docker; minutes)     |
+| `pnpm browser:install` / `pnpm test:browser`                               | Install Chromium once; real-browser tests of the web UI against a throwaway stack (Docker)    |
 | `pnpm verify`                                                              | lint + typecheck + test + build + architecture and environment checks                         |
 | `pnpm check:env`                                                           | Environment consistency: schemas, `.env.example`, Compose, Dockerfile                         |
 | `pnpm stack:up` / `stack:down` / `stack:ps` / `stack:logs` / `stack:build` | The full stack in containers (see above)                                                      |

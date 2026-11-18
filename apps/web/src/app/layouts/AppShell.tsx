@@ -2,10 +2,13 @@ import { MenuOutlined } from '@ant-design/icons';
 import { Button, Drawer, Flex, Layout, Typography, theme } from 'antd';
 import { useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Link, Outlet } from 'react-router';
+import { Link, Outlet, useParams } from 'react-router';
+import { UserMenu } from '../../features/auth';
 import { ApiStatus } from '../../features/health';
+import { OrganizationSwitcher } from '../../features/organizations';
 import { useMediaQuery } from '../../shared/hooks/useMediaQuery';
 import { LOCALES } from '../../shared/i18n/locales';
+import { organizationProjectsPath } from '../router/paths';
 import { useUiPreferences } from '../state/ui-preferences.store';
 import { NavigationProgress } from './NavigationProgress';
 import { PreferenceControls } from './PreferenceControls';
@@ -23,11 +26,12 @@ const SIDEBAR_COLLAPSED_WIDTH = 64;
  * - Wide screens get a collapsible sidebar; narrow screens get the same navigation in a drawer opened from the header.
  * - Landmarks: `<aside>` + `<nav>` (navigation), `<header>`, `<main id="main-content">`. A skip link jumps past the navigation.
  *
- * Route guards (authentication, permissions) belong around this component in the route table, not inside it.
+ * Route guards (authentication, permissions) belong around this component in the route table, not inside it: `RequireAuth` wraps it.
  */
 export function AppShell() {
   const { t } = useTranslation('shell');
   const { token } = theme.useToken();
+  const { organizationId } = useParams(); // the organization of the page, from the URL (ADR-0012 D2)
   const locale = useUiPreferences((s) => s.locale);
   const collapsed = useUiPreferences((s) => s.sidebarCollapsed);
   const setCollapsed = useUiPreferences((s) => s.setSidebarCollapsed);
@@ -94,10 +98,15 @@ export function AppShell() {
                   onClick={() => setDrawerOpen(true)}
                 />
               )}
+              <OrganizationSwitcher
+                currentOrganizationId={organizationId}
+                pathFor={organizationProjectsPath}
+              />
             </Flex>
             <Flex align="center" gap="middle" wrap>
               <ApiStatus />
               <PreferenceControls />
+              <UserMenu />
             </Flex>
           </Flex>
         </Layout.Header>

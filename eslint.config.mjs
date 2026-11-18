@@ -88,6 +88,25 @@ const NO_IMPORT_META_ENV = {
   selector: "MemberExpression[object.type='MetaProperty'][property.name='env']",
   message: 'Read configuration through "env" from shared/config/env. Only that file touches import.meta.env.',
 };
+// ADR-0012 D4 (rule 5): private data is fetched only through the session-gated observer path (hooks built on useQuery /
+// useInfiniteQuery). The imperative client methods ignore the gate, and cache writes could repopulate purged data, so they belong
+// to features/auth alone (the session probe and the transition block, which touch only the public roots).
+const IMPERATIVE_QUERY_METHODS = [
+  'fetchQuery',
+  'prefetchQuery',
+  'ensureQueryData',
+  'fetchInfiniteQuery',
+  'prefetchInfiniteQuery',
+  'ensureInfiniteQueryData',
+  'refetchQueries',
+  'setQueryData',
+  'setQueriesData',
+];
+const NO_IMPERATIVE_QUERY_CALLS = {
+  selector: `CallExpression[callee.type='MemberExpression'][callee.property.name=/^(${IMPERATIVE_QUERY_METHODS.join('|')})$/]`,
+  message:
+    'Do not fetch or write query data imperatively: private data is fetched only through useQuery/useInfiniteQuery hooks, which the session gate covers (ADR-0012 D4). Only features/auth may use this call, and only for the public session and health roots.',
+};
 
 // ---------------------------------------------------------------------------------------------------------
 // apps/api: module boundaries
@@ -466,7 +485,7 @@ export default tseslint.config(
     rules: {
       'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN, NO_ROUTER_DOM),
       'no-restricted-globals': ['error', NO_DIRECT_FETCH],
-      'no-restricted-syntax': ['error', NO_IMPORT_META_ENV],
+      'no-restricted-syntax': ['error', NO_IMPORT_META_ENV, NO_IMPERATIVE_QUERY_CALLS],
       'react-hooks/rules-of-hooks': 'error',
       'react-hooks/exhaustive-deps': 'warn',
     },
@@ -487,6 +506,11 @@ export default tseslint.config(
     rules: {
       'no-restricted-imports': restrict(...BASE, WEB_FORBIDDEN, NO_ROUTER_DOM, APP_FEATURE_PUBLIC_ONLY),
     },
+  },
+  {
+    // The session core: the one place allowed to use the imperative query calls (public roots only; see NO_IMPERATIVE_QUERY_CALLS).
+    files: ['apps/web/src/features/auth/**/*.{ts,tsx}'],
+    rules: { 'no-restricted-syntax': ['error', NO_IMPORT_META_ENV] },
   },
   {
     // The API client is the one place allowed to call fetch; env.ts the one place allowed to read import.meta.env.

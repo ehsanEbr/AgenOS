@@ -14,6 +14,7 @@ const en = {
     plannedHint: 'Not available yet',
     items: {
       overview: 'Overview',
+      projects: 'Projects',
       agents: 'Agents',
       models: 'Models',
       mcpGateway: 'MCP Gateway',
@@ -51,6 +52,7 @@ export const shellMessages: Messages<typeof en> = {
       plannedHint: 'هنوز در دسترس نیست',
       items: {
         overview: 'نمای کلی',
+        projects: 'پروژه‌ها',
         agents: 'عامل‌ها',
         models: 'مدل‌ها',
         mcpGateway: 'دروازهٔ MCP',

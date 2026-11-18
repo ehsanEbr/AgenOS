@@ -105,7 +105,7 @@ The worker logs `job completed` with the job id, type and correlation id.
 | Integration           | `pnpm test:integration`                                                       | `pnpm infra:up`            | API against real PostgreSQL/Redis; worker host and **worker process** against real Redis      |
 | System                | `pnpm test:system`                                                            | Docker (builds the images) | The whole Compose stack as a black box: see below                                             |
 | Everything but system | `pnpm verify` + `pnpm test:integration`                                       | `infra:up`                 | The set CI's `verify` and `integration` jobs run                                              |
-| Browser E2E (planned) | `pnpm test:browser` (**does not exist yet**, see below)                       | Docker, Chromium           | Real-browser tests of the web UI against a throwaway stack (ADR-0012, Phase 2.4 step 7)       |
+| Browser E2E           | `pnpm browser:install` once, then `pnpm test:browser`                         | Docker, Chromium           | Real-browser tests of the web UI against a throwaway stack (ADR-0012, Phase 2.4 step 7)       |
 
 - **Run one file:** `pnpm --filter @agentos/worker exec vitest run src/health.spec.ts`; integration:
   `pnpm --filter @agentos/worker exec vitest run --config vitest.integration.config.ts test/timeout.int.spec.ts`.
@@ -115,7 +115,7 @@ The worker logs `job completed` with the job id, type and correlation id.
 - **Worker process tests** run the built `apps/worker/dist` (Nx builds it first) and a test-only entry
   (`apps/worker/test/support/stuck-main.ts`) that adds a handler which never ends. The POSIX-only signal tests are listed as
   _skipped_ on Windows and run on Linux.
-- **System tests** (`tests/system`) build the images for the current commit under their own tag (`agentos-*:systest`, never your `agentos-*:local` images, which they never touch), label each image with the commit it was built from and **refuse to run if any image is not from this commit**. `SYSTEST_SKIP_BUILD=1` skips only the build, not that check. They print each image's ID, creation time and revision at the start. Then each test file starts its own
+- **System tests** (`tests/system`) build the images for the current commit under their own tag (`agentos-*:systest`, never your `agentos-*:local` images, which they never touch), label each image with the commit it was built from and **refuse to run if any image is not from this commit**. `SYSTEST_SKIP_BUILD=1` skips only the build, not that check. **Warning:** `SYSTEST_SKIP_BUILD=1` may reuse a stale image on a dirty working tree, because the `-dirty` revision label is not a content hash (every dirty state of one commit has the same label). Make sure the image matches your source before relying on the results; this applies to `pnpm test:browser` as well. They print each image's ID, creation time and revision at the start. Then each test file starts its own
   throwaway Compose project (`agentos-systest-<id>`: own volumes, network, random ports, generated credentials) and removes it
   at the end. They never touch your `agentos` project. They take several minutes. Files:
 
@@ -129,12 +129,18 @@ The worker logs `job completed` with the job id, type and correlation id.
   | `identity.system.spec.ts`      | Authentication through the web proxy: tables owned by the migration role, the API role's exact privileges, bootstrap and closed registration, cookie sign-in and CSRF, **Redis lost: new sign-ins 503, existing sessions keep working**, the audit trail (the API role cannot read, change or empty it), per-account rate limiting |
   | `worker-stuck.system.spec.ts`  | A handler that ignores its abort signal, under the real supervisor: restarts are bounded and BullMQ fails the poison job                                                                                                                                                                                                           |
 
-- **Browser E2E (planned; accepted in [ADR-0012](../adr/0012-phase-2-4-web-ui-foundations.md), not available yet).** From Phase 2.4 step 7,
-  `pnpm test:browser` will run Playwright (Chromium only) against a throwaway Compose project of the same harness as the system tests, with
-  its own `agentos-systest-<id>` name, ports and generated credentials. It needs Docker and a one-time Chromium download by an explicit
-  `playwright install` step (not part of `pnpm install`; confirmed when the dependency is added). The browser must open
-  `http://localhost:<port>`, not `127.0.0.1`, because the API accepts only the configured `WEB_ORIGIN`. CI runs it on Linux only, in its own
-  job; on Windows you may run it locally after installing Chromium, but Windows CI never does. Until then the command does not exist.
+- **Browser E2E** ([ADR-0012](../adr/0012-phase-2-4-web-ui-foundations.md) D1; `tests/system/browser/*.browser.ts`). `pnpm test:browser` runs
+  Playwright (Chromium only) against ONE throwaway Compose project of the same harness as the system tests (its own `agentos-systest-<id>`
+  name, ports and generated credentials), builds the images for the current commit first (`SYSTEST_SKIP_BUILD=1` skips only the build, not
+  the provenance check) and removes the project at the end. It needs Docker and a one-time Chromium download: `pnpm browser:install`
+  (the package installs with `pnpm install`; the browser does not). Each test starts from a fresh browser context and builds its own
+  organization, so they do not depend on each other; they take a few minutes including the image build. The browser opens
+  `http://localhost:<port>`, never `127.0.0.1`, because the API accepts only the configured `WEB_ORIGIN`; a test fails on any request to
+  another host and on any uncaught page error. One file: `pnpm --filter @agentos/system-tests exec playwright test members` (after
+  the images exist). A failure leaves `tests/system/test-results` (screenshot, trace; open with `playwright show-trace`) and, in CI,
+  `playwright-report`; both are git-ignored. CI runs this on Linux only, in its own job; on Windows you can run it locally, Windows CI never
+  does. **Registration is limited to 5 attempts per hour per address**, and every attempt counts, so the suite registers its people once
+  (`browser/global-setup.ts`) and the sign-up test is the only other registration: a new test must not register people.
 - **Do not use `docker kill`/`docker stop` to simulate a crash** in your own tests: Docker treats them as a manual stop and never
   applies the restart policy. Signal the process inside the container (`Stack.signalWorkerProcess`).
 - A failing system test leaves nothing behind (cleanup runs in `afterAll`); if a run is aborted, list leftovers with

@@ -37,17 +37,12 @@ export const LOCALES = {
 
 export type LocaleCode = keyof typeof LOCALES;
 export const LOCALE_CODES = Object.keys(LOCALES) as LocaleCode[];
+/**
+ * The language of a visitor who has not chosen one. It is English whatever the browser's language list says: the browser's preferences
+ * are deliberately NOT consulted, so only an explicit choice (saved in the UI preferences) selects another language.
+ */
 export const DEFAULT_LOCALE: LocaleCode = 'en';
 
 export function isLocaleCode(value: unknown): value is LocaleCode {
   return typeof value === 'string' && Object.hasOwn(LOCALES, value);
-}
-
-/** Picks the first supported language from the browser's preference list (`navigator.languages`). */
-export function detectLocale(preferred: readonly string[]): LocaleCode {
-  for (const tag of preferred) {
-    const code = tag.toLowerCase().split('-')[0];
-    if (isLocaleCode(code)) return code;
-  }
-  return DEFAULT_LOCALE;
 }

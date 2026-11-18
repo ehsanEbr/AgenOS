@@ -348,8 +348,17 @@ committed when the answer arrives, whichever request did it. B5 is confirmed aga
   older, Rule 5). The only ways out of an unresolved sign-out are the two definite outcomes above, or a sign-in (below). The interface
   never returns to the authenticated state from an unresolved sign-out by checking the server.
 - **A sign-in supersedes.** A sign-in that succeeds while the sign-out is unresolved runs its block (generation increased, flag cleared).
-  The sign-out request captured the generation when it started, so an outcome that arrives after the sign-in is ignored and cannot end
-  the new session.
+  The sign-out request captured the generation when it started, so **the client ignores the outcome** of that older logout, for
+  session-state purposes, when it arrives after the sign-in: it can neither end the new session in the client nor make it unresolved.
+  **This is a statement about the client's state only.** Ignoring an outcome does not cancel the server's processing of the logout and
+  does not undo a `Set-Cookie` header that the browser has already received. The logout response of a cookie session carries a
+  clearing `Set-Cookie`, and the sign-in response sets the new cookie under the **same cookie name**, so a late logout `204` can delete
+  the cookie that the newer sign-in just received. The server-side session created by that sign-in may remain valid while the browser
+  has lost its token; the next authenticated request then answers `401`, and the normal session-ended flow of this rule applies. **This
+  is a known limitation**, and it also applies across tabs: tabs share one cookie jar, and a tab cannot know about a logout in flight in
+  another. Aborting the older logout request from the client could narrow the window in one tab, but **no claim is made that it
+  prevents the race**: whether an abort stops a response whose headers are arriving is a browser behaviour this ADR does not rely on.
+  Verification in a real browser belongs to the Step 7 Playwright coverage.
 - **Deduplication.** Repeated clicks: the sign-out and Retry controls are disabled while a logout request is pending, and the auth module
   returns the in-flight promise to a second call, so one request is sent. A transition to unknown while already unknown is not a
   transition (Rule 5), so a second uncertain outcome cannot change the generation.
@@ -627,3 +636,388 @@ Conditions that must hold before the Phase 2.4 UI is released or step 7 is accep
   addresses organization-scoped pages by `/organizations/:organizationId/...`; the last-used organization is kept only to choose the
   first redirect and is validated before use. The server is unchanged: the organization id remains a selector validated on every request."
 - ADR-0005 is not edited; ADR-0012 D1 is the record of the scoped supersession.
+
+## Implementation notes (step 1: foundations)
+
+Recorded when step 1 was implemented. A note says how a decision was realized; none reopens or weakens a decision above, and the
+Accepted status and the revision history are unchanged.
+
+**Note 1. D4 rule 4: how an authentication mutation is marked.** Rule 4 skips the mutations "marked `meta: { auth: true }`" in the
+`401` handler, and rule 5 exempts them from the mutation start gate. **The intent is unchanged:** a genuine authentication mutation
+(sign-in, sign-up, sign-out) must be able to run without an authenticated session, and its failure must not end a session. What changed
+is the mechanism.
+
+- **A plain `meta: { auth: true }` is not trusted**, and neither is any other value a feature can write by hand (`'auth'`, `{}`, an
+  unrelated symbol, a symbol from the global registry). Any feature could write them, which would let a private mutation bypass the
+  session gate.
+- **The implementation uses a private symbol marker and the module boundary of the auth feature instead.** `features/auth/auth-mutation.ts`
+  holds a unique module-private symbol (deliberately not `Symbol.for`). `asAuthMutation(options)` adds it to a mutation's metadata and
+  `isAuthMutationMeta(meta)` accepts only that exact symbol, compared by identity. The module is **not exported** from
+  `features/auth/index.ts`, and the existing boundary rules (ESLint for `app/`, `tools/check-module-boundaries.mjs` for features) reject
+  an import of it from anywhere but the auth feature, so only the auth feature can mark a mutation. Step 2's sign-in and sign-out code
+  lives in that feature and imports it directly.
+- **A mutation that carries a look-alike value is an ordinary private mutation:** it is refused locally, before it is sent, while the
+  session is not authenticated, and its genuine `401` ends the session. Unit tests pin this for each look-alike, and the architecture
+  tests plant violations to show the boundary holds.
+- **What this safeguard is, and is not.** It is an architectural, module-boundary safeguard against accidents and against changes that
+  pass review. It is **not a security boundary** against arbitrary code already executing in the browser, which could read the marker
+  from the mutation cache. That limit is accepted: the server stays the authority on every request (D3, D4).
+
+## Implementation notes (step 3: organizations and routing)
+
+Recorded when step 3 was implemented. A note says how a decision was realized or what its first implementation leaves open; none
+reopens or weakens a decision above, and the Accepted status and the revision history are unchanged.
+
+**Note 2. D2: the `/projects` redirect and the stored preference.**
+
+- `/projects` is only a redirect route. It validates the stored last-used organization against the authenticated user's actual
+  organization list, read with the API's `limit` and `offset` (100 rows per request). If the id is not among the rows loaded so far and
+  the list has more pages, the next page is requested until the id is found or the list is exhausted; only then is it treated as stale
+  and discarded. A valid id leads to `/organizations/:organizationId/projects`, replacing the entry in the history.
+- Without a valid stored id the redirect never chooses an organization for the user: an account with none sees the first-organization
+  form, any other account sees the chooser, even when it has exactly one organization.
+
+**Note 3. D2: the organization route and the placeholder page.**
+
+- `/organizations/:organizationId` is the organization layout route. It asks `GET /organizations/:id` before rendering anything below it,
+  and its index route redirects to the `projects` child route. The index redirect is not in the route table of D2; it only keeps the bare
+  organization path from rendering an empty page.
+- The `projects` child page is currently an app-owned placeholder ("Projects are not available yet."). Step 4 replaces that page and
+  nothing else about the route shape.
+
+**Note 4. D2 and D4 rule 5 step 4: when the preference is cleared, and what that means.**
+
+- The last-used organization is cleared when the session becomes **anonymous** (a completed sign-out, a genuine `401`, a probe answering
+  `401`) and is **not** cleared when it becomes **unknown**, as D4 states. The application does this in `createQueryClient`, which always
+  clears the preference and then calls the optional `onSessionEnded` callback.
+- Because every completed session end clears it, the preference does not survive a sign-out or an ended session. After the next sign-in
+  the redirect usually has no stored id and shows the organization chooser. The preference helps only across reloads and new tabs while
+  the session stays valid. This follows the ADR and is recorded here so it is not mistaken for a defect.
+
+**Note 5. D5: scope and the feature graph in step 3.**
+
+- Organization creation is limited to the first-organization flow (an account with no organization), as D5 scopes it. The switcher
+  lists and switches organizations and offers no creation.
+- The `organizations` feature depends on no other feature (the boundary check reports `organizations -> (none)`). It does not know the
+  project routes: the switcher, the chooser and the first-organization form take their target path from the caller, and the redirect, the
+  path builders and the composition live in `app/`.
+
+## Implementation notes (step 4: project read UI)
+
+Recorded when step 4 was implemented. A note says how a decision was realized or what its first implementation leaves open; none
+reopens or weakens a decision above, and the Accepted status and the revision history are unchanged.
+
+**Note 6. D2 and D5: what the `projects` feature owns, and what it does not do yet.**
+
+- The `projects` feature owns the project list, a project's details and the paginated list of its explicit project members, all read-only.
+- Project creation is intentionally deferred to step 5, following the implementation sequence, even though the route table of D2 mentions
+  creation alongside the list page. Editing, archiving, restoring and member management are likewise left to steps 5 and 6.
+
+**Note 7. D5: lists and the API's own paging and order.**
+
+- The project list uses the backend's real `limit`/`offset` pagination and the API's ordering (oldest first), with the real `status`
+  filter. No client-side or fabricated sorting or searching was introduced, because the API has neither (V5).
+- The filter and the page live in component state and reset on a refresh; they are not part of the URL. While a page or a filter changes,
+  the list shows a loading state instead of keeping the previous rows: keeping them would risk showing rows from a different organization
+  scope. The list restarts from its first page when the organization changes.
+
+**Note 8. D3: the permission helper, and why nothing consumes it yet.**
+
+- The permission logic is a pure helper (`features/projects/permissions.ts`) with an independently written role-matrix test, as D3
+  requires. It is intentionally not yet consumed by any UI control: project write operations and member-management controls belong to
+  later steps, so no step 4 page offers an action it would govern.
+- The archived-project behavior (edit and member changes shown disabled, archive offered only while active, restore offered to holders of
+  the archive permission only while archived) is represented in the helper and covered by its tests.
+
+**Note 9. V2: what the members tab shows.**
+
+- Project members are explicit project memberships only. Implicit access through an organization owner or admin role is not represented
+  as an explicit project membership, and the tab says so.
+
+**Note 10. D5: the feature graph and the path builder in step 4.**
+
+- The `projects` feature depends only on the `auth` feature (through its `index.ts`); the `organizations` feature remains independent of
+  every other feature. The boundary check reports `projects -> auth` and `organizations -> (none)`.
+- `organizationProjectsPath` is owned by the `projects` feature, which owns the pages below that path, and is re-exported through the
+  application's routing layer (`app/router/paths.ts`) for the route table and the shell's organization switcher.
+
+## Implementation notes (step 5: project write operations)
+
+Recorded when step 5 was implemented. A note says how a decision was realized or what its first implementation leaves open; none
+reopens or weakens a decision above, and the Accepted status and the revision history are unchanged.
+
+**Note 11. D2: the forms, and where creation lives.**
+
+- Project creation, project editing and the archive confirmation use modals. Restoring a project does not require a confirmation.
+- Project creation stays on the project-list page and introduces no new route, as D2's route table has it. After a successful creation
+  the user is navigated to the new project's page.
+
+**Note 12. D3: the permission helper now governs real controls.**
+
+- The permission helper described in Note 8 now governs the visibility and the disabled state of the actual project write controls
+  (create, edit, archive, restore). Permission logic is not duplicated in UI components.
+- The helper's member-management action (`manageMembers`) remains unused by any UI control until step 6.
+- The backend remains the final authorization authority. The frontend checks only choose what to show; no request is skipped because of
+  them, and no control is offered until the caller's organization role is known.
+
+**Note 13. D5: where the organization role comes from.**
+
+- The organization-role input to the helper is fetched through the `projects` feature's own API query, which preserves the accepted
+  feature boundary: `projects` depends only on `auth` and has no dependency on `organizations`. The role is therefore requested separately
+  from the organization route's own request for the same organization.
+
+**Note 14. D4: the cache after a write, and after a refusal.**
+
+- Successful mutations use appropriately scoped invalidation and refetching: a creation refetches the project lists of its organization;
+  an edit, an archive or a restore refetches the project and the lists of its organization. No optimistic update and no direct
+  `setQueryData` write is used.
+- A `403` or `404` for an offered action means "your access changed" (D3): the relevant project, the organization role and the project
+  lists are refetched so the UI can reflect the changed access.
+- A `409 project_archived` response causes the project to be refetched and presented as read-only.
+- For an uncertain outcome (a network error, a timeout or a server error) the relevant data is refetched, the form remains available with
+  an explanatory notice where applicable, and the UI does not claim success.
+
+**Note 15. Duplicate submissions.**
+
+- Duplicate submissions are guarded, including a submission by the Enter key while a request is pending, which a loading button does not
+  block.
+
+## Implementation notes (step 6: project member management)
+
+Recorded when step 6 was implemented and after its review findings were remediated. A note says how a decision was realized or what its
+first implementation leaves open; none reopens or weakens a decision above, and the Accepted status and the revision history are
+unchanged.
+
+**Note 16. D3 and D5: what member management does.**
+
+- The members tab supports adding, changing the role of and removing **explicit** project members, through the existing backend endpoints
+  and the existing permission model. No endpoint, contract or permission was added or changed.
+- The permission helper's `manageMembers` action (unused until now, see Note 12) governs the controls: hidden without the permission,
+  shown disabled with the reason on an archived project, and absent until the caller's organization role is known. The backend remains the
+  final authority on every request.
+
+**Note 17. D5: the picker and pagination.**
+
+- The picker lists the members of the project's organization from the paginated `GET /organizations/:id/members` (100 per request), page
+  by page. Its search box filters **only the rows loaded so far**, and the dialog says so; it never claims to have searched the rest.
+- The ids of the project's existing members are loaded across all pages, so that people who are members already cannot be selected. Until
+  that loading is complete nothing is disabled. The backend's `409 already_project_member` remains authoritative, and after it the picker
+  forgets its selection and refetches the member ids.
+
+**Note 18. ADR-0011: explicit and implicit membership.**
+
+- Organization owners and admins hold project access implicitly, through their organization role. They are not represented as explicit
+  project members merely because of it, and nothing on the page makes them members.
+- The backend enforces no "last project admin" invariant (ADR-0011), and the frontend does not invent one: demoting or removing the only
+  project admin is offered like any other change, and the server's answer decides.
+
+**Note 19. Access after a removal or a role change.**
+
+- The effect on access depends on the person's organization role. An ordinary organization member (member or viewer) who loses their
+  explicit project membership loses access to the project; an organization owner or admin keeps access through their organization role.
+  The removal dialog says so, in English and Persian.
+- Removing oneself carries its own warning, read from the caller's organization role: informational when access is kept through the
+  organization role, a warning that access will be lost otherwise (after which the project answers as not found).
+- Ending or changing an explicit role never alters anyone's organization membership.
+
+**Note 20. D4: the cache after a member write.**
+
+- Member mutations use no optimistic update and no `setQueryData`. After a success the member lists and the member-id list of the project
+  are refetched; when the person changed is the caller, the project and the project lists of its organization are refetched too, because
+  the caller's own `projectRole` is part of both.
+- For an uncertain outcome (a network error, a timeout or a server error) the relevant data is refetched, the dialog stays open with a
+  notice, and the UI does not claim success. Repeating an uncertain add cannot add the same person twice, because the server answers `409`.
+- The role chosen in the change-role dialog is always sent. The row shown when the dialog opened may be stale, and the server treats a
+  change to the current role as a no-op that records nothing.
+
+**Note 21. Dialog lifecycle.**
+
+- When the member controls stop being enabled (for example the project is archived elsewhere), any open member dialog is discarded, and it
+  does not reappear when the permission returns.
+- While a request is pending, a dialog is protected from dismissal through the `Modal` props that govern it (`keyboard`, `closable`,
+  `maskClosable`) and a disabled Cancel button. Duplicate submissions are guarded as in Note 15.
+
+**Note 22. D3: reading a failed write.**
+
+- A failed write is treated as "your access changed" only for 403 `forbidden`, 404 `project_not_found` and 404 `organization_not_found`,
+  the codes the backend uses for it, taken from the contract constants. Any other 403 or 404 (for example a CSRF `origin_not_allowed`, or
+  a gateway's or the framework's generic `not_found`), and a known code on a different status, is a generic error and does not trigger the
+  access-change handling.
+- Member-specific outcomes are told apart by their codes: `organization_member_not_found` (the person left the organization),
+  `project_member_not_found` (already removed) and `already_project_member`.
+
+**Note 23. What the tests establish, and what they do not.**
+
+- The dismissal protection of Note 21 is verified **at the props level**: a test records what each dialog passes to `Modal` while its
+  request is pending. Cancel and the close button are also checked through the screen. The tests do **not** establish real-browser Escape
+  or mask-click behavior (under jsdom, Ant Design's Escape handling cannot be exercised), and the props-level test must not be read as an
+  Escape interaction test. Those checks belong to the Step 7 Playwright scenario.
+
+**Note 24. Languages: English and Persian.**
+
+- The UI is bilingual. English is the intended default for a new user, and Persian is a language the user can select; selecting it gives
+  Persian text and right-to-left layout (direction is derived from the language, see `frontend.md` section 5). Step 6 adds English and
+  Persian text for everything it shows (typed dictionaries, so a missing key does not compile), and changes no language mechanism.
+- Verified by the tests: the member controls, the picker and the removal confirmation render in Persian with `dir="rtl"`, with the language
+  set through the stored preference. The existing shell tests cover switching to Persian from the header selector (text, `dir`, `lang` and
+  the stored preference change) and reloading a stored Persian preference. Step 6 adds no test of the selector or of persistence.
+- **The existing behavior is not the same as "English unless the user selects Persian".** When no preference is saved, the initial language
+  is taken from the browser's language list (`detectLocale`), so a Persian browser starts in Persian; English applies when that list names
+  no supported language. This is documented in `frontend.md` section 5 and covered by the preference-store tests. Step 6 does not change
+  it; see Note 25.
+- The Persian text has not had a native-speaker review. That review remains a pre-release requirement (see "Release and acceptance
+  criteria").
+
+**Note 25. Deferred follow-ups (recorded, not decided, and not part of step 6).**
+
+- Accessibility of the reason shown for a disabled control (the step 5 pattern, which step 6 reuses).
+- Test hygiene in the member-dialog tests: a title that overstates what the props-level test checks, and an idle-state assertion that the
+  Close button exists (so that its absence while pending cannot pass vacuously).
+- Whether the read side (a failed members query, project detail) should also use the stable error codes instead of the status alone, as
+  Note 22 does for writes.
+- Migrating the deprecated Ant Design `maskClosable` prop to `mask.closable` in all dialogs, as one change.
+- The initial language: whether a browser whose language list names Persian should start in English until the user selects Persian
+  (Note 24). Changing it alters the existing preference mechanism and is its own reviewed change, not part of step 6.
+- The native-speaker review of the Persian text and layout remains a release criterion (see "Release and acceptance criteria").
+
+**Note 26. The language requirement, and what the code and tests verify.**
+
+This note separates the product requirement from the implementation facts. It adds no decision and changes no language mechanism; it
+complements Note 24, which stays as written.
+
+_Product requirement:_ AgentOS supports English and Persian. English is the default language. Persian is available as a user-selectable
+language, and selecting it activates the right-to-left layout and the Persian translations.
+
+_Verified in the code and tests (step 6 changed none of this):_
+
+- **Selectable.** A language select (`PreferenceControls`) is rendered in the signed-in shell and in the public layout. Choosing Persian
+  from it is tested in the signed-in shell only; the public layout renders the same component, but no test chooses a language there.
+- **Persian activates RTL and the translations.** Choosing Persian changes the text, `<html dir>` to `rtl`, `<html lang>` to `fa` and the
+  document title, and keeps the same elements (no remount). Direction is derived from the language in the locale registry. A preference
+  of Persian also renders the shell and the step 6 member dialogs in Persian, right to left.
+- **Persisted, in the browser.** The choice is part of the UI preferences, kept by the Zustand store in `localStorage` under
+  `agentos.ui-preferences`; the store's tests check that the choice is written and restored at startup, that invalid stored fields fall
+  back to their defaults one by one (tested with the theme and the sidebar; the language field has the same fallback in the code), and
+  that corrupted or unavailable storage does not throw. A small script in `index.html` applies a saved Persian choice
+  (and `dir`) before the first paint; a test checks it. The tests run in jsdom; persistence across real page reloads was not tested in a
+  browser.
+- **Independent of authentication.** The preference is client-side only: it is stored for the browser (the key holds no user), it is not
+  sent to the API, and it needs no session. Ending a session clears only the stored last-used organization. No test asserts that the
+  language survives a sign-out.
+
+_Where the implementation differs from the requirement:_ **English is not the default in every case.** When no preference is saved, the
+initial language is the first supported language in the browser's language list, and English only when the list names none (`detectLocale`;
+tests: `fa-IR` gives Persian, `de-DE` gives English). A fresh browser whose language list prefers Persian therefore starts in Persian, even
+though the user has not selected it. This is the behavior documented in `frontend.md` section 5. It is recorded here as a fact; whether to
+change it is the follow-up of Note 25 and is not decided here.
+
+_Release criterion, unchanged:_ the Persian text and layout still need a native-speaker review before release.
+
+**Note 27. The initial language is English: what changed, what Notes 24 to 26 now mean, and what stays open.**
+
+Recorded when the initial-language correction was implemented and reviewed. It adds no decision and does not reopen any decision above.
+
+- **Resolved.** The initial-language follow-up of Note 25 is resolved: English is the default language regardless of the browser's
+  language. With no saved language the application starts in English, left to right; neither the preferences store nor the pre-paint script
+  in `index.html` consults `navigator.language` or `navigator.languages`. A saved choice, English or Persian, takes precedence. The tests
+  start the store afresh and run the script against the same stored states (jsdom).
+- **Notes 24 and 26, on this one point.** Their statements that the initial language comes from the browser's language list (the third
+  bullet of Note 24, and the paragraph of Note 26 about where the implementation differs from the requirement) describe the behavior
+  before this correction. The rest of both notes is unchanged, and so is the rest of Note 25.
+- **Accepted without migration: a previously detected Persian.** Before the correction a Persian browser started in Persian, and the store
+  writes every preference whenever any one changes, so a browser may hold a saved `fa` that was detected and not chosen. The application
+  cannot tell that value from a deliberate choice, and resetting it could overwrite an intentional preference. It is therefore kept. The
+  person can switch to English with the language select, which is on every page, including the public ones.
+- **Persist version 1 is assumed twice.** The pre-paint script and the Zustand runtime both assume persist version 1. Zustand discards a
+  state saved under a different numeric version (no `migrate` function is configured) and logs an error, while the script does not read the
+  version: a saved Persian choice under another version would be painted in Persian and then replaced by English. Nothing writes another
+  version, and a test pins this behavior. **A future change of the persist version must update the pre-paint script and the Zustand
+  migration and version behavior together.**
+- **Still open.** (1) A real-browser check that the page does not flash the wrong language or direction before the application starts: the
+  tests compare the script with the store in jsdom and do not show how a browser paints. (2) The native-speaker review of the Persian text
+  and layout, which remains a release criterion (see "Release and acceptance criteria").
+
+## Implementation notes (step 7: browser E2E)
+
+Recorded when step 7 was implemented and reviewed. A note says how a decision was realized or what its first implementation leaves open;
+none reopens or weakens a decision above, and the Accepted status and the revision history are unchanged.
+
+**Note 28. D1: what step 7 delivered.**
+
+- Real-browser tests run with Playwright (`@playwright/test`), **pinned exactly to 1.64.1**, as a development dependency of `tests/system`
+  only (`apps/web` gets no browser framework, as D1 requires). They have their own runner entry: `tests/system/playwright.config.ts` and
+  `tests/system/browser/*.browser.ts`, run by `pnpm test:browser`. Chromium only, one worker, no retries. The Vitest system tests, their
+  `include` and the `system` CI job are unchanged and browser-free.
+- **Q1.** The package and the two packages it depends on have no install script, so `pnpm install` downloads no browser and no
+  `allowBuilds` entry was needed. The Chromium binary comes only from the explicit step `pnpm browser:install`
+  (`playwright install --with-deps chromium`).
+- **Q2.** No Content-Security-Policy was introduced. The built page holds one inline script (the pre-paint script of `index.html`) and many
+  Ant Design `<style>` elements and `style` attributes, so a useful policy needs a hash or a nonce and a decision about styles: a
+  separately designed and reviewed change. One measurement in the browser showed every request going to the application's own origin.
+- **Q3.** The `browser` CI job builds its own images. It shares nothing with the `system` job, at the price of building the images twice.
+- **CI.** A new Linux job `browser` in `ci.yml` is part of the `needs` of `ci-result`, with no `continue-on-error`; Chromium is installed
+  only in that job. `windows.yml` is unchanged and neither installs nor runs a browser (it still installs the package and lints and
+  typechecks the new files).
+- **Isolation**, as D1 describes it: one throwaway stack per run, a fresh browser context per test, and each test builds its own
+  organization. A test fails on any request outside the stack's origin and on any uncaught page error. (The same port on the numeric loopback
+  address is also allowed, for the one test that checks the refusal of an origin the API does not allow.)
+
+**Note 29. D1: English-default browser coverage.**
+
+- D1's isolation rules say that a context with `locale: 'fa-IR'` drives the Persian/RTL check because "the browser's language list decides
+  the first language". After the initial-language correction (Notes 26 and 27), English is the default even when the browser prefers
+  Persian. The browser tests therefore use `fa-IR` contexts to show that the application starts in English, left to right (also before any
+  script of the application has run), and select Persian explicitly with the language select. Persian brings the Persian text and the
+  right-to-left layout, survives a reload and signing out, and can be reversed to English.
+- Note 27 supersedes the browser-detection wording of D1 for this behavior only. D1 and every accepted decision stand unchanged, and so
+  does the text of D1 above.
+
+**Note 30. Registration coverage.**
+
+- Registration is limited to 5 attempts per hour per client address, and every attempt counts (`identity/domain/throttle-policy.ts`); the
+  whole run comes from one address. The browser suite therefore registers three people once, through the API, in its global setup and shares
+  them; the sign-up test registers a fourth through the UI. Four of the five attempts are used, so a new browser test must not register
+  people, and running the suite more than twice in one stack would exceed the limit.
+- **Covered in the browser:** a new person's first visit (the sign-up form, the account-created notice, sign-in, the HttpOnly session
+  cookie, the "create your first organization" flow and a first project) and a sign-in refused from an origin the API does not allow, with
+  the message that names the cause.
+- **Not covered in a browser, covered at lower levels:** (a) the empty-instance bootstrap, where the first registration is allowed even when
+  registration is closed: the API unit tests (`services.spec.ts`) and the API-level system test through the web container
+  (`identity.system.spec.ts`). The browser stack opens registration (`AUTH_ALLOW_REGISTRATION=true`, D1), so the person who signs up there is
+  the fourth user and not the first user of an empty instance; (b) the registration-closed answer and its message (`403 registration_closed`,
+  "Registration is closed"): the same API tests and the jsdom sign-up test in `features/auth/auth-pages.spec.tsx`.
+- This is an intentional scope limit of the browser tests, not a claim of full browser coverage of registration. The browser scenario
+  "Register the first user" is realized as a new person's first visit.
+
+**Note 31. Real-browser dialog behavior.**
+
+- Chromium tests press Escape, click the mask, and use the close button and Cancel, for the dialogs that exist: create, edit and archive
+  confirmation (projects) and add, change role and remove (members). While idle, Escape and Cancel close the dialog, a click on the mask does
+  not (`maskClosable={false}`), and the close button is offered. While the request is held on its way to the server, Cancel is disabled, the
+  close button is gone, and neither Escape nor a click on the mask closes the dialog. Every "does not close" check is paired with the idle
+  "does close" check of the same dialog.
+- The guard that does the work while a request runs is Ant Design's own: in the inspected version (6.7.0, pinned exactly) `Modal` ignores
+  every cancel while `confirmLoading` is set, whatever `keyboard` is. `keyboard={!pending}` therefore adds protection that a person cannot
+  observe, while `closable={!pending}` (the close button disappears) and the disabled Cancel are visible. An experiment during step 7 showed
+  it: forcing `keyboard` on alone changed nothing in a real browser; forcing it on and also removing `confirmLoading` made Escape close the
+  dialog, and the test failed. The browser tests guard the behavior, not the props.
+- **Clarification of Notes 21 and 23, which stay as written.** Note 21 says a pending dialog is protected from dismissal through the `Modal`
+  props: that is true in effect, but the mechanism doing the work is `confirmLoading`, with the props as additional protection or visible
+  behavior. Note 23 defers real-browser Escape and mask-click behavior to step 7: these tests close that deferral. The props-level test it
+  describes remains valid as a check of how the dialogs are configured.
+- **Pre-paint.** The browser tests hold the application's scripts back and check `lang` and `dir` on `<html>`, set by the inline script of
+  `index.html`, while nothing of the application is drawn. This shows that the attributes are set before the application's scripts run. It
+  does not prove that no incorrectly painted frame ever appears.
+
+**Note 32. Outstanding verification.**
+
+- A successful run of the `browser` job on a GitHub-hosted Linux runner is still required: hosted-runner Docker, the system libraries
+  installed by `--with-deps`, the Chromium cache, the artifact upload, the cold image-build time and Chromium's launch have not been
+  exercised there. The tests ran locally on Windows with Docker Desktop (Linux containers); that does not establish compatibility with the
+  Linux runner.
+- `actionlint` has not passed on the new job. It was not run: no local executable was available, and an unpinned container image was not
+  run. Parsing the YAML checked its structure only.
+- The native-speaker review of the Persian text and layout remains a release criterion.
+- `SYSTEST_SKIP_BUILD=1` skips the build and checks each image's revision label against `<sha>` or `<sha>-dirty`. On a dirty working tree
+  `-dirty` is not a content hash, so a stale image built from an earlier dirty state passes the check. This is a property of the system-test
+  harness (`currentRevision` in `tests/system/src/stack.ts`); it is documented in `docs/architecture/development.md` and is not changed here.

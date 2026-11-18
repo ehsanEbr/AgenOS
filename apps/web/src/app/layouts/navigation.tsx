@@ -5,6 +5,7 @@ import {
   EyeOutlined,
   ExperimentOutlined,
   PlayCircleOutlined,
+  ProjectOutlined,
   RobotOutlined,
   SettingOutlined,
 } from '@ant-design/icons';
@@ -23,11 +24,23 @@ export interface NavItem {
    * When a feature lands, add its routes and flip the status (a test fails if an available entry has no route).
    */
   status: 'available' | 'planned';
+  /**
+   * Further paths on which this entry is the current section, besides `to` (a route pattern). The Projects entry is a redirect, so the
+   * pages it leads to live under `/organizations/:organizationId/projects`.
+   */
+  activeOn?: string;
 }
 
 /** Primary navigation, in display order (specification section 14.2). Labels live in the `shell` namespace. */
 export const NAV_ITEMS: readonly NavItem[] = [
   { key: 'overview', to: '/', icon: <DashboardOutlined />, status: 'available' },
+  {
+    key: 'projects',
+    to: '/projects',
+    icon: <ProjectOutlined />,
+    status: 'available',
+    activeOn: '/organizations/:organizationId/projects/*',
+  },
   { key: 'agents', to: '/agents', icon: <RobotOutlined />, status: 'planned' },
   { key: 'models', to: '/models', icon: <ExperimentOutlined />, status: 'planned' },
   { key: 'mcpGateway', to: '/mcp-gateway', icon: <ApiOutlined />, status: 'planned' },

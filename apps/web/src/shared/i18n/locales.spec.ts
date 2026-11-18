@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ANTD_LOCALES } from './antd-locales';
-import { DEFAULT_LOCALE, LOCALES, LOCALE_CODES, detectLocale, isLocaleCode } from './locales';
+import { DEFAULT_LOCALE, LOCALES, LOCALE_CODES, isLocaleCode } from './locales';
 
 describe('locale registry', () => {
   it('declares a direction, language tag, name and font for every locale', () => {
@@ -28,20 +28,10 @@ describe('locale registry', () => {
   });
 });
 
-describe('detectLocale', () => {
-  it('matches on the primary language subtag, case-insensitively', () => {
-    expect(detectLocale(['fa-IR'])).toBe('fa');
-    expect(detectLocale(['FA'])).toBe('fa');
-    expect(detectLocale(['en-GB'])).toBe('en');
-  });
-
-  it('takes the first supported language from the preference list', () => {
-    expect(detectLocale(['de', 'fa', 'en'])).toBe('fa');
-  });
-
-  it('falls back to the default', () => {
-    expect(detectLocale([])).toBe(DEFAULT_LOCALE);
-    expect(detectLocale(['ja', 'zh-CN'])).toBe(DEFAULT_LOCALE);
+describe('the default language', () => {
+  it('is English (left to right): the language of anyone who has not chosen one', () => {
+    expect(DEFAULT_LOCALE).toBe('en');
+    expect(LOCALES[DEFAULT_LOCALE].dir).toBe('ltr');
   });
 });
 

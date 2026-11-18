@@ -99,12 +99,60 @@ jobs:
           ids=$(docker ps -aq --filter "label=com.docker.compose.project" | xargs -r docker inspect --format '{{.Id}} {{index .Config.Labels "com.docker.compose.project"}}' | awk '$2 ~ /^agentos-systest-/ {print $1}')
           [ -z "$ids" ] || echo "$ids" | xargs docker rm -f
 
+  # Real-browser end-to-end tests (ADR-0012 D1). Linux only, and the ONLY job that installs a browser: the `system` job above is unchanged
+  # and installs none, and windows.yml neither installs nor runs one. The job builds its own images (it shares nothing with `system`),
+  # boots one throwaway Compose project (tests/system/src/stack.ts) and drives Chromium against it. No .env and no secret is involved.
+  browser:
+    name: Browser tests (Playwright + Chromium, full Docker Compose stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - name: Read the Playwright version
+        id: playwright
+        run: echo "version=$(pnpm --filter @agentos/system-tests exec playwright --version | awk '{print $2}')" >> "$GITHUB_OUTPUT"
+      # The browser download is cached per Playwright version; a new version downloads its own Chromium.
+      - name: Cache the Chromium download
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      - name: Install Chromium and its system libraries
+        run: pnpm browser:install
+      - name: Browser tests
+        run: pnpm test:browser
+      # Traces and screenshots come from a throwaway stack with generated credentials and contain nothing real.
+      # `failure()` alone is false when the job is cancelled or times out (those steps end as "cancelled", not "failed"), which are exactly the
+      # runs whose report is most wanted; a status function in the condition is also what lets GitHub run this step after a cancellation.
+      - name: Playwright report and traces (on failure or cancellation)
+        if: ${{ failure() || cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            tests/system/playwright-report
+            tests/system/test-results
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Docker state (on failure)
+        if: failure()
+        run: |
+          docker ps -a --format 'table {{.Names}}\t{{.Status}}'
+          docker volume ls --format '{{.Name}}' | grep agentos-systest || true
+      # Throwaway projects remove themselves; this is a safety net for an aborted run, limited to the test prefix.
+      - name: Remove leftover system-test projects
+        if: always()
+        run: |
+          ids=$(docker ps -aq --filter "label=com.docker.compose.project" | xargs -r docker inspect --format '{{.Id}} {{index .Config.Labels "com.docker.compose.project"}}' | awk '$2 ~ /^agentos-systest-/ {print $1}')
+          [ -z "$ids" ] || echo "$ids" | xargs docker rm -f
+
   # One status to require in branch protection. It FAILS unless every required job succeeded: a skipped, cancelled or failed
   # job can never produce a green result.
   ci-result:
     name: CI result
     if: always()
-    needs: [verify, integration, system]
+    needs: [verify, integration, system, browser]
     runs-on: ubuntu-latest
     steps:
       - name: Require every job to have succeeded

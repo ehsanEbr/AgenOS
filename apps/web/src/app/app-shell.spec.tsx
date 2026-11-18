@@ -32,7 +32,7 @@ describe('application shell (desktop)', () => {
     expect(document.querySelector('a, button, [tabindex="0"]')).toBe(skip);
   });
 
-  it('shows the product areas: Overview is a link to the current page, the rest are disabled placeholders', async () => {
+  it('shows the product areas: Overview and Projects are links, the rest are disabled placeholders', async () => {
     healthyApi();
     renderApp('/');
     const nav = await screen.findByRole('navigation', { name: 'Main navigation' });
@@ -40,6 +40,10 @@ describe('application shell (desktop)', () => {
     const overview = within(nav).getByRole('link', { name: 'Overview' });
     expect(overview).toHaveAttribute('href', '/');
     expect(overview).toHaveAttribute('aria-current', 'page');
+
+    const projects = within(nav).getByRole('link', { name: 'Projects' });
+    expect(projects).toHaveAttribute('href', '/projects'); // the entry point: only a redirect to an organization's projects
+    expect(projects).not.toHaveAttribute('aria-current');
 
     for (const name of [
       'Agents',
@@ -206,6 +210,23 @@ describe('preferences in the shell', () => {
     expect(screen.getByRole('navigation', { name: 'ناوبری اصلی' })).toBeInTheDocument();
     await waitFor(() => expect(document.title).toBe('نمای کلی · AgentOS'));
     expect(useUiPreferences.getState().locale).toBe('fa');
+  });
+
+  it('lets the user switch back to English: text, direction and title change back, content does not remount', async () => {
+    healthyApi();
+    renderApp('/', { preferences: { locale: 'fa' } });
+    const heading = await screen.findByRole('heading', { level: 1, name: 'نمای کلی' });
+    expect(root.dir).toBe('rtl');
+
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: 'زبان' }));
+    fireEvent.click(await screen.findByTitle('English'));
+
+    expect(root.dir).toBe('ltr');
+    expect(root.lang).toBe('en');
+    expect(await screen.findByRole('heading', { level: 1, name: 'Overview' })).toBe(heading);
+    expect(screen.getByRole('navigation', { name: 'Main navigation' })).toBeInTheDocument();
+    await waitFor(() => expect(document.title).toBe('Overview · AgentOS'));
+    expect(useUiPreferences.getState().locale).toBe('en');
   });
 
   it('remembers the sidebar state', async () => {

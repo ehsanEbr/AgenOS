@@ -11,3 +11,7 @@ coverage
 !.env.example
 *.pem
 *.key
+
+# Playwright (tests/system browser tests): reports and traces of a run
+playwright-report
+test-results

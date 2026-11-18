@@ -73,6 +73,7 @@ System / infrastructure conventions (details in docker-compose.md, ci.md, enviro
 - Services exit 0 on a clean shutdown. A worker that must be restarted exits non-zero and relies on the Compose restart policy (`on-failure:5`); **`docker stop`/`docker kill` are manual stops and never trigger it**, so signal the process inside the container when testing restarts.
 - System tests (`tests/system`) use throwaway Compose projects named `agentos-systest-<id>` and never touch the developer's `agentos` project; never add a code path that deletes volumes of any other project.
 - CI: one required status (`CI result`); every job calls a root script, so what CI runs is what you run. Do not add `continue-on-error`.
+- Browser E2E (`tests/system/browser/*.browser.ts`, Playwright, **Chromium only**, ADR-0012 D1): `pnpm browser:install` once, then `pnpm test:browser`. Chromium is installed only in the Linux `browser` CI job; `windows.yml` and the `system` job never install or run a browser. One throwaway `Stack` per run, a fresh context per test, each test builds its own organization (no test depends on another), one worker, no retries, no fixed sleeps. The browser must open `http://localhost:<port>` (the API accepts only `WEB_ORIGIN`), and a test fails on any request to another host. Registration is limited to 5 per hour per address and every attempt counts: people are registered once in `browser/global-setup.ts`; a new test must not register people.
 
 ## Gotchas
 

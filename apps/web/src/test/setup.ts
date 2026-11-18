@@ -1,8 +1,12 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup } from '@testing-library/react';
+import { cleanup, configure } from '@testing-library/react';
 import { afterEach, beforeEach, vi } from 'vitest';
 import { defaultPreferences, useUiPreferences } from '../app/state/ui-preferences.store';
 import { installMatchMedia, resetMedia } from './media';
+
+// Testing Library's default wait for findBy*/waitFor is 1 s, which a loaded Windows runner can exceed (the app-shell test flaked on
+// it in CI). 4 s stays below Vitest's 5 s test timeout, so a real failure is still reported by the assertion, not by the timeout.
+configure({ asyncUtilTimeout: 4_000 });
 
 // Ant Design relies on browser APIs jsdom does not implement.
 class ResizeObserverStub {

@@ -172,7 +172,8 @@ selects the Ant Design algorithm, sets `data-theme` and `color-scheme` on `<html
   **Direction is derived from the language**, so there is exactly one layout. `ThemeProvider` passes `direction`, the Ant Design locale and the
   theme to `ConfigProvider`, and sets `<html lang dir>`. Components never pass `direction` themselves.
 - **Switching** (header selects) re-renders the same React tree: DOM nodes are reused, nothing is duplicated. The choice persists; with
-  none saved, the browser's language list decides (a Persian browser starts in Persian/RTL).
+  none saved, the language is **English**, whatever the browser prefers (the browser's language list is deliberately not consulted). The
+  pre-paint script in `index.html` applies only a saved Persian choice, so it agrees with the store. Signing out does not reset it.
 - **CSS rules:** only logical properties: `margin-inline-start`, `padding-inline`, `inset-inline-end`, `border-inline-start`, `text-align: start`,
   `block-size`/`inline-size`, never `left/right/margin-left/padding-right/width` for layout meaning. Prefer Ant Design layout components
   (`Flex`, `Space`, `Layout`), which already mirror. In style objects use the camelCase logical names (`paddingInline`, `insetInlineStart`).
@@ -320,7 +321,7 @@ Helpers (`src/test`):
 Conventions: query by **role and accessible name** (`getByRole('navigation', { name: 'Main navigation' })`), then text; never by Ant Design class names or
 DOM structure (the only exceptions assert direction: `-rtl` modifiers, drawer placement). Test behavior a user or screen reader can perceive, not
 implementation (no asserting on hook internals or re-render counts). Use `findBy*`/`waitFor` for async UI, not fixed sleeps. Each feature tests: its states
-(loading/empty/error/success), its hooks' retry behavior if it is non-default, and its route. No browser end-to-end framework is used in `apps/web` (ADR-0005); system-level browser tests in `tests/system` are accepted and planned (ADR-0012, section 13).
+(loading/empty/error/success), its hooks' retry behavior if it is non-default, and its route. No browser end-to-end framework is used in `apps/web` (ADR-0005); the system-level Playwright tests live in `tests/system` (ADR-0012 D1, section 12).
 
 ## 10. Performance and accessibility
 
@@ -386,6 +387,34 @@ reasons, the evidence and the full session contract.
 - The **last-used organization** is a browser preference in `app/state`, used only by the `/projects` redirect; it is validated against
   the caller's organizations before use and cleared on sign-out. It never replaces the id in the URL. Switching organization is a navigation;
   every organization-dependent query key contains the organization id.
+- **Implemented in step 3 (organizations).** `features/organizations` holds the list, the chooser, the first-organization form and the shell's
+  switcher; `app/router` composes them: `/projects` (the redirect), the layout `/organizations/:organizationId` (it asks the API whether
+  the caller may open the organization, then stores it as the last-used one; a `404` or an id that is no id is one not-found state with a
+  link to the chooser) and the path builders. The stored id is discarded when it is not in the caller's list (the entry pages through the list until it is found or the list ends)
+  and when the session ends (`createQueryClient` always clears it, then calls the optional `onSessionEnded` callback). The default
+  destination after a sign-in is `/projects`.
+
+- **Implemented in step 4 (projects, read side).** `features/projects` serves the three pages below `/organizations/:organizationId/projects`:
+  the list (real `status` filter and `limit`/`offset` paging, oldest first, no sorting or search), a project's details and its members
+  tab (explicit members, paged), in both languages. `permissions.ts` (the pure helper and its matrix test) is in place; the controls it
+  governs (create, edit, archive, restore, member changes) arrive in steps 5 and 6. A project that does not exist, is not visible, or
+  does not belong to the organization in the path is one not-found state; the document title is static. `projects` imports `auth` only.
+
+- **Implemented in step 5 (projects, write side).** Create (a form on the list page, no route of its own), edit (name and description), archive
+  (with a confirmation) and restore. `permissions.ts` now decides which controls are shown, from the organization role (the feature's own
+  `GET /organizations/:id` query) and the project's explicit role; nothing is offered until the role is known. Writes are private mutations
+  that invalidate (never write) the project lists of their organization and, for a change, the project itself. A `403`/`404` means "your
+  access changed" (the role, the project and the lists are refetched); a network error, timeout or `5xx` is uncertain (the data is refetched
+  and the form stays with a notice); a taken slug and validation failures show on the field; the server's own text is never shown. Member
+  management is step 6.
+
+- **Implemented in step 6 (project members).** The members tab adds, re-roles and removes explicit members, and `manageMembers` of the permission
+  helper now governs the controls (hidden without the permission, disabled with the reason on an archived project, absent until the
+  organization role is known). The picker reads the organization's members through this feature's own query (100 per request, "load more";
+  the API has no search, so the search box filters only the rows loaded and says so) and disables people who are members already once all
+  the project's members are known. The backend has **no** "last project admin" rule (ADR-0011), so the UI adds none; removing oneself
+  warns, more strongly when it ends the caller's access to the project. Writes refetch the project's member lists, and the project and
+  its organization's lists only when the caller's own membership changed.
 
 **Feature graph.** New features `auth`, `organizations`, `projects`. `projects` imports `auth` (through its `index.ts`) and nothing else;
 `organizations` and `auth` import no feature. `projects` reads organization data (the caller's role, the members for the picker) through its
@@ -406,7 +435,7 @@ It is tested against an independently written table.
   `QueryCache` and `MutationCache`. No cache callback navigates. Private requests do not run unless authenticated.
 - A sign-out with an uncertain outcome (network error, timeout, 5xx) moves to **unknown**, unmounts the private UI and completes the
   sign-out by repeating the logout; it is never settled by a `GET /me` probe (the backend does not order a probe after a timed-out logout).
-- **[planned]** Private data is fetched only through hooks built on `useQuery`/`useInfiniteQuery`; imperative `fetchQuery`, `prefetchQuery`,
+- **[enforced]** Private data is fetched only through hooks built on `useQuery`/`useInfiniteQuery`; imperative `fetchQuery`, `prefetchQuery`,
   `ensureQueryData`, `refetchQueries` and writes with `setQueryData` are banned outside `features/auth` by lint.
 - Known limits: a reload or another tab can briefly show previously authenticated UI after a sign-out in a tab that has not yet learned of
   it (no time bound is claimed), and cross-tab session synchronization is out of scope.
@@ -414,5 +443,15 @@ It is tested against an independently written table.
 **Lists.** Real `limit`/`offset` and `total` (page size at most 100); no client-side sorting or search, because the API has none. The
 project-member picker pages the organization members ("load more") and filters only the rows already loaded, saying so.
 
-**Browser E2E.** System-level Playwright tests (Chromium, Linux CI only) live in `tests/system`, not in `apps/web`; see
-[ci.md](ci.md) and [development.md](development.md). Testing Library with jsdom stays the unit, component and routing layer.
+**Browser E2E.** System-level Playwright tests (Chromium, Linux CI only) live in `tests/system/browser`, not in `apps/web`; see
+[ci.md](ci.md) and [development.md](development.md). Testing Library with jsdom stays the unit, component and routing layer. What the
+browser tests add, because jsdom cannot show it: a real HttpOnly cookie across a reload, a deep link through sign-in, a session that ends
+on the server, a second tab, the browser history, real keyboard and mouse behavior of the dialogs (Escape, a click on the mask), the
+language and direction before the application starts and the real right-to-left layout.
+
+**Content-Security-Policy (ADR-0012 open question Q2): none is set, on purpose.** The browser run measured what the built application
+loads: every request goes to the application's own origin (one document, 18 script chunks, 2 stylesheets, API calls; no font, image or
+third-party host), but the page also holds one inline script (the pre-paint script of `index.html`), dozens of `<style>` elements and
+`style` attributes (Ant Design's CSS-in-JS). A useful policy therefore needs a hash or nonce for the inline script and either
+`'unsafe-inline'` for styles or nonce plumbing through Ant Design. That is a change of its own, with its own review; it is not part of the
+browser-test step. The tests do enforce the part that matters now: no request leaves the stack's origin.

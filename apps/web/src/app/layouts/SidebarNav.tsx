@@ -1,6 +1,6 @@
 import { Flex, Menu, Tag, type MenuProps } from 'antd';
 import { useTranslation } from 'react-i18next';
-import { NavLink, matchPath, useLocation } from 'react-router';
+import { Link, matchPath, useLocation } from 'react-router';
 import { NAV_ITEMS } from './navigation';
 
 interface SidebarNavProps {
@@ -10,15 +10,19 @@ interface SidebarNavProps {
 
 /**
  * Primary navigation. Entries are real links (so they can be opened in a new tab and are announced as links), planned
- * product areas are disabled with a "Soon" tag, and the current page is marked with `aria-current="page"` by NavLink.
+ * product areas are disabled with a "Soon" tag, and the current section is marked with `aria-current="page"`.
  */
 export function SidebarNav({ onNavigate }: SidebarNavProps) {
   const { t } = useTranslation('shell');
   const { pathname } = useLocation();
 
-  const selectedKey = NAV_ITEMS.find(
-    (item) => item.status === 'available' && matchPath({ path: item.to, end: item.to === '/' }, pathname),
-  )?.key;
+  /** Whether `item` is the current section: its own path, or (for the Projects redirect) the pages it leads to. */
+  const isCurrent = (item: (typeof NAV_ITEMS)[number]) =>
+    item.status === 'available' &&
+    (matchPath({ path: item.to, end: item.to === '/' }, pathname) !== null ||
+      (item.activeOn !== undefined && matchPath({ path: item.activeOn }, pathname) !== null));
+
+  const selectedKey = NAV_ITEMS.find(isCurrent)?.key;
 
   const items: MenuProps['items'] = NAV_ITEMS.map((item) => {
     const label = t(`nav.items.${item.key}`);
@@ -27,10 +31,10 @@ export function SidebarNav({ onNavigate }: SidebarNavProps) {
         key: item.key,
         icon: item.icon,
         label: (
-          // NavLink sets aria-current="page" on the active link, which assistive technology announces.
-          <NavLink to={item.to} end={item.to === '/'}>
+          // The current section is announced with aria-current="page" (what NavLink would set, plus the pages a redirect leads to).
+          <Link to={item.to} aria-current={isCurrent(item) ? 'page' : undefined}>
             {label}
-          </NavLink>
+          </Link>
         ),
       };
     }

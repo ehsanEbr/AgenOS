@@ -8,30 +8,49 @@ import { AppProviders } from '../app/providers/AppProviders';
 import { createQueryClient } from '../app/providers/query-client';
 import { createTestRouter } from '../app/router/create-router';
 import { useUiPreferences, type UiPreferences } from '../app/state/ui-preferences.store';
+import { requireSessionLifecycle, type SessionValue } from '../features/auth';
+import { testUser } from './fixtures/api';
 
 /**
  * A query client with the application's real defaults and retry policy, except that retries are immediate so tests do
  * not wait for backoff.
  */
-export function createTestQueryClient(): QueryClient {
+export function createTestQueryClient(session?: SessionValue): QueryClient {
   const client = createQueryClient();
   client.setDefaultOptions({
     ...client.getDefaultOptions(),
     queries: { ...client.getDefaultOptions().queries, retryDelay: 0 },
   });
+  if (session) requireSessionLifecycle(client).transition(session);
   return client;
 }
+
+/** The session tests start in unless they ask for another: signed in as the fixture user (the whole app is behind the guard). */
+export const SIGNED_IN: SessionValue = {
+  status: 'authenticated',
+  user: { id: testUser.id, email: testUser.email, displayName: testUser.displayName },
+};
+
+/** The signed-out session, for tests that start without a user. */
+export const SIGNED_OUT: SessionValue = { status: 'anonymous' };
 
 interface Options extends Omit<RenderOptions, 'wrapper'> {
   /** Preferences to start with (theme, language, sidebar). Defaults: English, light. */
   preferences?: Partial<UiPreferences>;
   queryClient?: QueryClient;
+  /**
+   * The session to start in. Default: signed in as the fixture user. Pass `{ status: 'anonymous' }` to start signed out, or `null`
+   * to leave the session untouched so the app probes `GET /me` through the (mocked) API exactly like a browser does on load.
+   */
+  session?: SessionValue | null;
 }
 
-function setup({ preferences, queryClient }: Options) {
+function setup({ preferences, queryClient, session }: Options) {
   if (preferences) useUiPreferences.setState(preferences);
   const locale = useUiPreferences.getState().locale;
-  return { queryClient: queryClient ?? createTestQueryClient(), i18n: createI18n(locale) };
+  const client = queryClient ?? createTestQueryClient();
+  if (session !== null) requireSessionLifecycle(client).transition(session ?? SIGNED_IN);
+  return { queryClient: client, i18n: createI18n(locale) };
 }
 
 /** Renders a component inside the real application providers (theme, direction, i18n, query cache). */
