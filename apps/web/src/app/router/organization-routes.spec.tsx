@@ -481,7 +481,7 @@ describe('the organization switcher in the shell', () => {
     expect(await within(menu).findByText('Showing 150 of 150')).toBeInTheDocument();
     expect(screen.getByRole('menu', { name: 'Switch organization' })).toBeInTheDocument();
     expect(requestsTo(spy, '/organizations?limit=100&offset=100')).toHaveLength(1);
-  }, 20_000); // 150 menu rows in jsdom
+  }, 60_000); // 150 menu rows in jsdom, on a runner that may be slow
 
   it('says when the list cannot be loaded and offers to try again', async () => {
     let failing = true;

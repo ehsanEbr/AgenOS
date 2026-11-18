@@ -11,7 +11,7 @@ import {
   testProjectMember,
   testUser,
 } from '../../test/fixtures/api';
-import { renderApp } from '../../test/render';
+import { createTestQueryClient, renderApp } from '../../test/render';
 import type { SessionValue } from '../../features/auth';
 import { organizationProjectsPath } from './paths';
 
@@ -678,6 +678,14 @@ describe("a project's members (paginated, explicit members only)", () => {
   it(
     "starts from the first page when the user moves to another project's members",
     async () => {
+      // The page must not depend on how fast the machine is: with the application's `staleTime` of 30 s, a slow runner (this test took
+      // 20 to 40 s there) finds project 2's members stale on the way back and refetches the first page once more, which is correct
+      // behavior but not what is under test. A cache that stays fresh makes "cached" mean cached, and the count of requests exact.
+      const queryClient = createTestQueryClient();
+      queryClient.setDefaultOptions({
+        ...queryClient.getDefaultOptions(),
+        queries: { ...queryClient.getDefaultOptions().queries, staleTime: Infinity },
+      });
       const spy = api({
         projects: [project(1), project(2)],
         members: {
@@ -685,7 +693,7 @@ describe("a project's members (paginated, explicit members only)", () => {
           [projectId(2)]: many(45, (n) => member(100 + n)),
         },
       });
-      const { router } = renderApp(`${LIST}/${projectId(2)}/members`);
+      const { router } = renderApp(`${LIST}/${projectId(2)}/members`, { queryClient });
       await screen.findByRole('row', { name: /Member 101/ });
       // Project 2 is now cached: moving back to it does not pass through a loading state that would reset the page by itself.
       await act(() => router.navigate(MEMBERS));

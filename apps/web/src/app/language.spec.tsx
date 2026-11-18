@@ -79,7 +79,7 @@ describe('choosing the language on the public pages', () => {
     expect(directionOf()).toBe('ltr');
     expect(screen.getByLabelText('Email')).toBeInTheDocument();
     expect(savedLocale()).toBe('en');
-  }, 20_000);
+  }, 60_000);
 });
 
 describe('the language and the session', () => {
@@ -94,5 +94,5 @@ describe('the language and the session', () => {
     expect(directionOf()).toBe('rtl');
     expect(useUiPreferences.getState().locale).toBe('fa');
     expect(savedLocale()).toBe('fa');
-  }, 20_000);
+  }, 60_000);
 });
