@@ -48,5 +48,9 @@ export default defineConfig({
     // themselves (see the tiers in the heavy router specs).
     testTimeout: 30_000,
     hookTimeout: 30_000,
+    // In CI the output is read from a log, and Nx replays a task's output through a pipe that cut the long per-test listing of the default
+    // reporter off before its end: the hosted Linux run lost the failures and the summary. One character per test, the failures in full
+    // at the end, and annotations keep the output short enough to arrive whole. Locally the default reporter is unchanged.
+    reporters: process.env.CI ? ['dot', 'github-actions'] : ['default'],
   },
 });
