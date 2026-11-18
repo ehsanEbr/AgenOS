@@ -543,4 +543,4 @@ describe('sign-in and sign-up stay separate operations', () => {
   });
 });
 
-vi.setConfig({ testTimeout: 15_000 });
+vi.setConfig({ testTimeout: 60_000 }); // whole-application renders on a slow runner; a real hang still fails

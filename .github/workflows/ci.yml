@@ -23,7 +23,8 @@ jobs:
   verify:
     name: Static checks, unit tests, build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # `pnpm test` alone took about 14 minutes on a hosted runner (it takes about 5 on a development machine): 20 was too tight.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup

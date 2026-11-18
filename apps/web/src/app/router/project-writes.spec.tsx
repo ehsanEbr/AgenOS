@@ -20,8 +20,9 @@ import { organizationProjectsPath } from './paths';
  * next write answer `403`. The UI only chooses what to SHOW; every assertion about authorization is about what the server was asked.
  */
 
-// Several tests render the whole application, a table and a modal form: allow for that without hiding a real hang.
-vi.setConfig({ testTimeout: 20_000 });
+// Several tests render the whole application, a table and a modal form, and a hosted runner is much slower than a development machine:
+// allow for that without hiding a real hang.
+vi.setConfig({ testTimeout: 60_000 });
 
 const pad = (n: number) => String(n).padStart(12, '0');
 const orgId = (n: number) => `00000000-0000-4000-8000-${pad(n)}`;

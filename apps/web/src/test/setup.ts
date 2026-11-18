@@ -4,9 +4,10 @@ import { afterEach, beforeEach, vi } from 'vitest';
 import { defaultPreferences, useUiPreferences } from '../app/state/ui-preferences.store';
 import { installMatchMedia, resetMedia } from './media';
 
-// Testing Library's default wait for findBy*/waitFor is 1 s, which a loaded Windows runner can exceed (the app-shell test flaked on
-// it in CI). 4 s stays below Vitest's 5 s test timeout, so a real failure is still reported by the assertion, not by the timeout.
-configure({ asyncUtilTimeout: 4_000 });
+// Testing Library's default wait for findBy*/waitFor is 1 s, which a loaded runner exceeds (the app-shell test flaked on it in CI), and
+// the 4 s that replaced it was exceeded too by the heavy router specs on a hosted runner. 15 s stays below the default test timeout of
+// 30 s (vite.config.ts), so a real failure is still reported by the assertion, not by the timeout.
+configure({ asyncUtilTimeout: 15_000 });
 
 // Ant Design relies on browser APIs jsdom does not implement.
 class ResizeObserverStub {

@@ -793,4 +793,4 @@ describe('a 401 from the API while the user works', () => {
   });
 });
 
-vi.setConfig({ testTimeout: 15_000 });
+vi.setConfig({ testTimeout: 60_000 }); // whole-application renders on a slow runner; a real hang still fails

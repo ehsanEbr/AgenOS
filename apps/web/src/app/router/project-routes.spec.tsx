@@ -22,17 +22,18 @@ import { organizationProjectsPath } from './paths';
  */
 
 /*
- * Timeouts. Every test here renders the whole application (shell, router, tables, dialogs) in jsdom, which is slow; the default of 5 s is
- * right for a test that takes under about 2 s and wrong for the rest. A test that was MEASURED at 2 s or more gets one of these, chosen so
- * that the timeout is at least 3 times the slowest measurement of its tier (measured with both specs running in parallel, on a development
- * machine): a slower CI machine does not fail a healthy test, and a test that hangs still fails within a minute and a half.
- *   SLOW     measured 2 to 7 s
+ * Timeouts. Every test here renders the whole application (shell, router, tables, dialogs) in jsdom, which is slow, and a hosted CI runner
+ * is much slower than a development machine: the first hosted run timed out tests that take a few seconds here at a limit of 20 s. A test
+ * that was MEASURED at 2 s or more gets one of these tiers, chosen so that the timeout is at least 4 times the slowest time seen for the
+ * tier in any local run, including a run with the process restricted to one CPU: a healthy test does not fail on a slow runner, and a test
+ * that hangs still fails within a few minutes. Untiered tests use the 30 s default of vite.config.ts.
+ *   SLOW     measured 2 to 7 s   (13 s seen with one CPU)
  *   SLOWER   measured 7 to 12 s
- *   SLOWEST  measured over 12 s
+ *   SLOWEST  measured over 12 s  (38 s seen with one CPU)
  */
-const SLOW = 20_000;
-const SLOWER = 40_000;
-const SLOWEST = 90_000;
+const SLOW = 60_000;
+const SLOWER = 90_000;
+const SLOWEST = 180_000;
 
 const pad = (n: number) => String(n).padStart(12, '0');
 const orgId = (n: number) => `00000000-0000-4000-8000-${pad(n)}`;

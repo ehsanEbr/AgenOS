@@ -23,9 +23,9 @@ import { organizationProjectsPath } from './paths';
  * preference. `fetch` is the only thing faked, and the fake API pages like the real one (`limit`, `offset`, `total`).
  */
 
-// These tests render the whole application (shell, lazy routes, the pages below) and can pass 4 s on a loaded machine: allow for that
-// without hiding a real hang.
-vi.setConfig({ testTimeout: 20_000 });
+// These tests render the whole application (shell, lazy routes, the pages below); one of them timed out at 20 s on a hosted runner.
+// Allow for a slow machine without hiding a real hang.
+vi.setConfig({ testTimeout: 60_000 });
 
 const ANONYMOUS_SESSION: SessionValue = { status: 'anonymous' };
 const idOf = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;

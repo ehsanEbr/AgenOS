@@ -43,5 +43,10 @@ export default defineConfig({
     setupFiles: ['src/test/setup.ts'],
     include: ['src/**/*.spec.{ts,tsx}'],
     css: false,
+    // Vitest's 5 s default is too short for a test that renders the whole application in jsdom on a hosted CI runner (the first hosted
+    // run timed out several of them). A test that hangs still fails; a healthy one on a slow machine does not. Slower tests say so
+    // themselves (see the tiers in the heavy router specs).
+    testTimeout: 30_000,
+    hookTimeout: 30_000,
   },
 });
