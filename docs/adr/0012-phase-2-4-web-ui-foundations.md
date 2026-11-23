@@ -1,6 +1,7 @@
 # ADR-0012: Web UI foundations for projects (Phase 2.4): browser E2E, organization context, permission helper, session handling
 
-**Status:** Accepted (revision 5, approved at commit `4cd0c89`; decisions D1 to D5 are accepted, nothing is implemented yet: no code, test, dependency, manifest, lockfile or workflow was changed, and implementation proceeds in the steps of "Implementation sequence", each reviewed before the next).
+**Status:** Accepted (revision 5, approved at commit `4cd0c89`; decisions D1 to D5 are accepted). At acceptance, nothing was implemented yet: no code, test, dependency, manifest, lockfile or workflow had changed, and implementation was to proceed in the steps of "Implementation sequence".
+**Implementation since acceptance:** steps 1 to 7 are on `main` (feature `3bb1bef`, hosted CI green at `686fa9a`). The notes at the end record steps 1 and 3 to 7. Step 2 (`features/auth`) is in the tree and has no notes heading of its own; [frontend.md](../architecture/frontend.md) section 13 describes it. Decisions D1 to D5 and this revision history are unchanged.
 **Date:** 2026-11-16
 **Revisions:** 1 = the first proposal. 2 = the review's corrections: the session and cache lifecycle of D4 is specified exactly (the session
 entry is never removed by cleanup), the nested routes of D2 are recorded as approved, and the open items are separated into accepted
@@ -577,19 +578,19 @@ PR #5 was a one-second default under load), never fixed sleeps, and lazy routes 
 
 ## Conflicts with the existing architecture and documents
 
-| Item                                                                                     | Status                                                                                                                                                    |
-| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ADR-0005 decision 8: "No browser end-to-end framework"                                   | **Narrowed by D1** (scoped supersession; ADR-0005 text unchanged). `apps/web` still has no browser framework.                                             |
-| `ci.md` "Not included (by decision): browser/E2E tests"; `frontend.md` sections 9 and 12 | Out of date once this ADR was accepted; updated after acceptance, as accepted and planned (not as existing), so the documents still describe what exists. |
-| ADR-0010 decision 9: "the active organization is a browser preference"                   | **Refined by D2** for the client only; the server-side meaning is untouched.                                                                              |
-| ADR-0010 and ADR-0011: "system scenario / browser-level scenario in step 2.4"            | **Fulfilled by D1**, with the extra tool, runner and job recorded here.                                                                                   |
-| `routes.spec.ts` pins the navigation order and has no Projects entry                     | The implementation adds the entry and updates the test deliberately.                                                                                      |
-| `frontend.md` "conventions only" for auth, guards, forms and tables                      | The implementation is their first real use; the guide is updated with what was learned (as the earlier steps did).                                        |
+| Item                                                                                     | Status                                                                                                                                                                                                              |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ADR-0005 decision 8: "No browser end-to-end framework"                                   | **Narrowed by D1** (scoped supersession; ADR-0005 text unchanged). `apps/web` still has no browser framework.                                                                                                       |
+| `ci.md` "Not included (by decision): browser/E2E tests"; `frontend.md` sections 9 and 12 | Out of date once this ADR was accepted; updated after acceptance, as accepted and planned (not as existing), so the documents still describe what exists. After `3bb1bef` those guides describe the implementation. |
+| ADR-0010 decision 9: "the active organization is a browser preference"                   | **Refined by D2** for the client only; the server-side meaning is untouched.                                                                                                                                        |
+| ADR-0010 and ADR-0011: "system scenario / browser-level scenario in step 2.4"            | **Fulfilled by D1**, with the extra tool, runner and job recorded here.                                                                                                                                             |
+| `routes.spec.ts` pins the navigation order and has no Projects entry                     | The implementation adds the entry and updates the test deliberately.                                                                                                                                                |
+| `frontend.md` "conventions only" for auth, guards, forms and tables                      | The implementation is their first real use; the guide is updated with what was learned (as the earlier steps did).                                                                                                  |
 
 No conflict with the layer rules, the tenancy rules (CLAUDE.md "Tenancy and authorization", "Projects"), or the API contracts. No Phase 2.3
 backend contract needs to change.
 
-## Implementation sequence (accepted with this ADR as the plan; each step needs its own review and approval before it starts, none has started)
+## Implementation sequence (the accepted plan; steps 1 to 7 have since landed on `main`, see the notes)
 
 | Step | Scope                                                                                                                                          |
 | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------- |

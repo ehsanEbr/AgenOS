@@ -5,13 +5,12 @@ Workflows: [`ci.yml`](../../.github/workflows/ci.yml) (Linux, authoritative), [`
 [ADR-0009](../adr/0009-integration-and-ci.md); the browser job:
 [ADR-0012](../adr/0012-phase-2-4-web-ui-foundations.md).
 
-> **Status of verification.** The workflows were validated statically with `actionlint`, and every command they run was executed
-> locally (on Windows and in a clean Linux container, and the Docker stack on a local Docker engine). **They have not been
-> executed by GitHub Actions**: the phase branch is not pushed. The first real run is the first proof that the runner-specific parts
-> (hosted-runner Docker, the `ubuntu-latest`/`windows-latest` images, action versions, caching) work. For the `browser` job that
-> includes `playwright install --with-deps chromium` on the hosted runner, the Chromium cache and the artifact upload: the tests
-> themselves ran against a local Docker engine on Windows (the job is Linux-only in CI), and `actionlint` was not run on the new job
-> (the structure was checked by parsing the YAML).
+> **Status of verification.** GitHub Actions has run these workflows. On `main` at `686fa9a` (2026-11-18,
+> [Linux run 44304104596](https://github.com/ehsanEbr/AgenOS/actions/runs/44304104596)) `verify`, `integration`, `system`, `browser`
+> and `ci-result` completed with success, and so did Windows portability
+> ([run 44304103963](https://github.com/ehsanEbr/AgenOS/actions/runs/44304103963)). The first hosted `pnpm test` of the web UI
+> (`3bb1bef`) failed on Linux `verify` and on Windows. The causes and the fixes are in [Hosted unit tests](#hosted-unit-tests). That
+> paragraph records those runs. A later commit needs its own run.
 
 ## Jobs
 
@@ -65,6 +64,29 @@ chromium`; the download is cached per Playwright version). The `system` job is u
 - **Required.** `browser` is in the `needs` of `ci-result`; no `continue-on-error`.
 - **Content-Security-Policy (ADR-0012 Q2).** No policy is introduced in this step. See [frontend.md](frontend.md) section 12 for what the
   built application loads and why a policy needs its own reviewed change.
+
+## Hosted unit tests
+
+`pnpm test` for `apps/web` renders the whole application in jsdom. Limits that passed on a large development machine were too small on a
+hosted 4-vCPU runner, where the `verify` job's `pnpm test` step took about 14 minutes (about 5 minutes on the machine the limits were
+first chosen on). What is in the tree now:
+
+- **Job timeout.** `verify` in `ci.yml` and `windows` in `windows.yml` are 30 minutes. The test step alone used about 14, so 20 minutes
+  is not enough room.
+- **Per-test limits.** `apps/web/vite.config.ts` sets `testTimeout` and `hookTimeout` to 30 seconds (Vitest's default is 5).
+  `apps/web/src/test/setup.ts` sets Testing Library's `asyncUtilTimeout` to 15 seconds, still under the test timeout, so a real failure
+  is the assertion. The heavy router and auth specs set a higher file or tier limit (60 seconds, and up to 180 seconds for the slowest
+  tiers). A test that hangs still fails.
+- **Reading a CI failure.** Nx replays a task's output through a pipe. The default Vitest reporter prints one line per slow test, and on
+  the hosted Linux `verify` job that listing was cut off before the failures and the summary (the reproduction in commit `fec9fc2` puts
+  the cut at about 64 KiB). When `CI=true`, the web suite uses the `dot` reporter plus `github-actions`: one character per test, the
+  failures in full at the end, and annotations. Without `CI`, the default reporter is unchanged. A local run with `CI=true` shows dots
+  on purpose.
+- **Counting requests.** The application client keeps query data fresh for 30 seconds (`staleTime` in
+  `apps/web/src/app/providers/query-client.ts`). A jsdom test that leaves a page and comes back can take longer than that on a slow
+  runner, so a second fetch is correct. A test that counts requests gives its client `staleTime: Infinity`. See
+  `project-routes.spec.tsx`, "starts from the first page when the user moves to another project's members". With the default
+  `staleTime`, that test received `['0', '0']` where it expected `['0']`.
 
 ## Design points
 

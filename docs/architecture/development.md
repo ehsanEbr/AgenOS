@@ -14,7 +14,7 @@ Node.js >= 22.12, pnpm 11 (`corepack enable` picks the pinned version), Docker w
 pnpm install
 pnpm setup:env      # creates .env with random local passwords. On an existing .env it only ADDS missing variables; no value is changed
 pnpm infra:up       # PostgreSQL + Redis, provisions the database roles, waits until healthy
-pnpm db:deploy      # applies Prisma migrations as the migration role (identity and audit tables)
+pnpm db:deploy      # applies Prisma migrations as the migration role (identity, organizations, projects, audit)
 pnpm dev            # builds the shared packages, then runs api, worker and web in watch mode
 ```
 
@@ -39,6 +39,31 @@ curl -s http://localhost:3000/api/v1/me -H "authorization: Bearer <token from th
 ```
 
 Sign-in needs Redis (it rate-limits attempts and **fails closed** when Redis is down); an existing session keeps working without it.
+
+### Open the web app
+
+With `pnpm dev` running, the UI is http://localhost:5173. Open `localhost`, not `127.0.0.1`. Cookie-authenticated writes must come from
+`WEB_ORIGIN` (default `http://localhost:5173`). Another host or port is `403 origin_not_allowed`, and the sign-in page says that address
+is not allowed. If Vite prints a different port because 5173 is busy, set `WEB_ORIGIN` to that origin before signing in.
+
+1. Open `/sign-up` and create the first account. The API does **not** sign that account in. The page continues to `/sign-in` with the
+   email filled in. After the first user, registration is closed (`403 registration_closed`) unless `AUTH_ALLOW_REGISTRATION=true`
+   ([environment.md](environment.md#registration-is-closed-how-to-add-a-user)).
+2. Sign in. With no other destination the app goes to `/projects`. Sign-in needs Redis and fails closed when Redis is down, the same as
+   the curl calls above.
+3. A user with no organization sees **Create your first organization**. The name is 1–100 characters (`organizationNameSchema`).
+   Submitting it makes the caller the owner and opens `/organizations/<id>/projects`.
+4. A user who already belongs to an organization, and has no valid last-used organization in this browser, sees **Choose an
+   organization** instead. The id in the path is only a selector. An organization they cannot open is one not-found page, with a link
+   back to the chooser. The page does not say whether the id is missing or forbidden.
+5. On the project list, creating a project asks for a name (1–100 characters) and a slug. The slug is 2–48 characters, matches
+   `^[a-z0-9]+(-[a-z0-9]+)*$`, is unique in the organization, and cannot be changed later. A Latin name is suggested as a slug. A name
+   with no Latin letters or digits (for example Persian) leaves the slug empty for the person to type. A duplicate slug is
+   `409 project_slug_taken` and is shown on the field.
+
+Routes, which controls a role can see, and what a `401` does to the cache are in [frontend.md](frontend.md) section 13. The same
+operations exist on the API (`/api/v1`, cookie or bearer token). Request shapes are `packages/contracts/src/organizations.ts` and
+`packages/contracts/src/projects.ts`. Swagger is http://localhost:3000/api/docs.
 
 ### The full stack in containers
 
@@ -95,6 +120,7 @@ The worker logs `job completed` with the job id, type and correlation id.
 | `permission denied for table/schema ...` from the API                                         | Working as designed: the API role holds only what migrations granted. A new table needs its `GRANT` in the same migration (see backend.md, "Database roles")                                                                                                                                                                      |
 | `DATABASE_ADMIN_URL is required` in an integration test                                       | `.env` predates it: `pnpm setup:env` adds it                                                                                                                                                                                                                                                                                      |
 | `ERR_PNPM_IGNORED_BUILDS` after adding a dependency                                           | Allow or deny its install script in `pnpm-workspace.yaml` (`allowBuilds`)                                                                                                                                                                                                                                                         |
+| Sign-in says this web address is not allowed                                                  | The page is not `WEB_ORIGIN` (default `http://localhost:5173`). Open that origin. `127.0.0.1` does not match `localhost`. If Vite chose another port, set `WEB_ORIGIN` to it                                                                                                                                                      |
 
 ## Testing
 
@@ -119,15 +145,16 @@ The worker logs `job completed` with the job id, type and correlation id.
   throwaway Compose project (`agentos-systest-<id>`: own volumes, network, random ports, generated credentials) and removes it
   at the end. They never touch your `agentos` project. They take several minutes. Files:
 
-  | File                           | What it verifies                                                                                                                                                                                                                                                                                                                   |
-  | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-  | `dependencies.system.spec.ts`  | API starts with no dependencies (alive, not ready, leaks nothing), becomes ready when they appear; losing and regaining PostgreSQL / Redis flips readiness and recovers with **no API restart**                                                                                                                                    |
-  | `stack.system.spec.ts`         | Migrate before API; all healthy; loopback-only ports; web -> API proxy; a job processed by the worker container; worker has no DB credentials; **graceful shutdown, every exit code 0**; volumes and data survive `down`                                                                                                           |
-  | `worker.system.spec.ts`        | Healthy worker; Redis outage: not ready then recovered in the **same process, one connection**; crash -> Docker restart + job recovered; SIGTERM -> exit 0, **not restarted**; forced stop leaves the job unacknowledged and it is recovered                                                                                       |
-  | `worker-config.system.spec.ts` | Invalid configuration: exit 2, **exactly 5 restarts**, then stays down, names the variable, no credential                                                                                                                                                                                                                          |
-  | `guards.system.spec.ts`        | The harness's own protections: the isolation guard **aborts before creating anything** for each kind of leaked setting (ports, network, image tag, passwords) and prints no credential; ambient developer variables are neutralized; the image-provenance rule                                                                     |
-  | `identity.system.spec.ts`      | Authentication through the web proxy: tables owned by the migration role, the API role's exact privileges, bootstrap and closed registration, cookie sign-in and CSRF, **Redis lost: new sign-ins 503, existing sessions keep working**, the audit trail (the API role cannot read, change or empty it), per-account rate limiting |
-  | `worker-stuck.system.spec.ts`  | A handler that ignores its abort signal, under the real supervisor: restarts are bounded and BullMQ fails the poison job                                                                                                                                                                                                           |
+  | File                           | What it verifies                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+  | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+  | `dependencies.system.spec.ts`  | API starts with no dependencies (alive, not ready, leaks nothing), becomes ready when they appear; losing and regaining PostgreSQL / Redis flips readiness and recovers with **no API restart**                                                                                                                                                                                                                                                                     |
+  | `stack.system.spec.ts`         | Migrate before API; all healthy; loopback-only ports; web -> API proxy; a job processed by the worker container; worker has no DB credentials; **graceful shutdown, every exit code 0**; volumes and data survive `down`                                                                                                                                                                                                                                            |
+  | `worker.system.spec.ts`        | Healthy worker; Redis outage: not ready then recovered in the **same process, one connection**; crash -> Docker restart + job recovered; SIGTERM -> exit 0, **not restarted**; forced stop leaves the job unacknowledged and it is recovered                                                                                                                                                                                                                        |
+  | `worker-config.system.spec.ts` | Invalid configuration: exit 2, **exactly 5 restarts**, then stays down, names the variable, no credential                                                                                                                                                                                                                                                                                                                                                           |
+  | `guards.system.spec.ts`        | The harness's own protections: the isolation guard **aborts before creating anything** for each kind of leaked setting (ports, network, image tag, passwords) and prints no credential; ambient developer variables are neutralized; the image-provenance rule                                                                                                                                                                                                      |
+  | `identity.system.spec.ts`      | Authentication through the web proxy: tables owned by the migration role, the API role's exact privileges, bootstrap and closed registration, cookie sign-in and CSRF, **Redis lost: new sign-ins 503, existing sessions keep working**, the audit trail (the API role cannot read, change or empty it), per-account rate limiting                                                                                                                                  |
+  | `projects.system.spec.ts`      | The `projects` schema owned by the migration role and the API role's column-level privileges; then organization, project and member through the web proxy: an owner sees a member's project with no project membership of their own, a viewer sees nothing until added, a foreign organization is `404`, archive and restore are idempotent, a role change applies on the next request, and removing an organization member deletes that user's project memberships |
+  | `worker-stuck.system.spec.ts`  | A handler that ignores its abort signal, under the real supervisor: restarts are bounded and BullMQ fails the poison job                                                                                                                                                                                                                                                                                                                                            |
 
 - **Browser E2E** ([ADR-0012](../adr/0012-phase-2-4-web-ui-foundations.md) D1; `tests/system/browser/*.browser.ts`). `pnpm test:browser` runs
   Playwright (Chromium only) against ONE throwaway Compose project of the same harness as the system tests (its own `agentos-systest-<id>`

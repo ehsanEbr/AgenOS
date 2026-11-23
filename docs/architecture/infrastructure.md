@@ -35,7 +35,7 @@ Queues, workers, schedulers and every domain entity are **out of scope** and arr
 pnpm install
 pnpm setup:env      # creates .env with random local passwords; never overwrites an existing .env
 pnpm infra:up       # starts PostgreSQL + Redis and waits until both are healthy
-pnpm db:deploy      # applies migrations (none exist yet, see "Prisma workflow")
+pnpm db:deploy      # applies the committed Prisma migrations (see "Prisma workflow")
 pnpm dev
 ```
 
@@ -135,13 +135,16 @@ apps/api/
     └── migrations/            committed to git; applied as the migration role
 ```
 
-**Phase 1.2 defined no models; domains add theirs in their own phase.** Phase 2.1 added the first two (`identity.prisma`, `audit.prisma`)
-and the first migrations; Phase 2.2 added `organizations.prisma` (its tables share the `identity` PostgreSQL schema with Identity's, but each table belongs to exactly one module). Each domain gets one PostgreSQL schema (`@@schema("identity")`, declared in `base.prisma`), one `.prisma` file
-per module, and one migration history for the whole repository. Facts verified on Prisma 6.19.3: multi-schema needs no preview flag;
+**Phase 1.2 defined no models; domains add theirs in their own phase.** Phase 2.1 added `identity.prisma` and `audit.prisma` and the first
+migrations, including the canonical-email check. Phase 2.2 added `organizations.prisma` (those tables share the `identity` PostgreSQL
+schema with Identity; each table belongs to exactly one module). Phase 2.3 added `projects.prisma` (PostgreSQL schema `projects`).
+`base.prisma` declares `schemas = ["identity", "projects", "security"]`. One `.prisma` file per module, and one migration history for
+the whole repository. Seven migrations are committed: a generated tables migration and a hand-written privileges migration for identity,
+organizations and projects, plus the identity canonical-email check. Facts verified on Prisma 6.19.3: multi-schema needs no preview flag;
 the first migration emits `CREATE SCHEMA IF NOT EXISTS`; `_prisma_migrations` lives in `public`; a foreign key may cross schemas; one
 generated client and one transaction span all schemas; a hand-written trigger or `GRANT` in a migration causes no drift; model names must
-be unique across schemas. Two migrations exist: the generated tables, and a hand-written one with the `GRANT`s and the audit guard
-(see [backend.md](backend.md#database-roles-and-the-audit-trail)).
+be unique across schemas. Each model names its schema with `@@schema("...")`. Grants and the audit guard are described in
+[backend.md](backend.md#database-roles-and-the-audit-trail).
 
 **The Prisma CLI connects with the migration role**: the datasource URL is `env("DATABASE_MIGRATE_URL")`. The running API never reads
 that variable: `PrismaService` passes the API role's `DATABASE_URL` to the client explicitly, so the application cannot connect with
@@ -254,8 +257,6 @@ reports readiness; BullMQ reuses the same Redis (workers and producers use their
 - **Single-node development setup only.** No replication, backups, TLS, or secret manager. `rediss://` URLs are accepted
   by configuration validation, but TLS is not configured in compose.
 - **Passwords are generated once.** Rotating them requires changing them inside PostgreSQL/Redis, not just in `.env`.
-- **No migrations or tables yet**, by design; the migration workflow is documented and exercised against the empty schema
-  only. The first real migration (next domain phase) will be the first full test of `migrate dev` / `migrate deploy`.
 - **`prisma migrate dev` is not usable non-interactively when it needs to prompt** (for example, destructive changes); that
   is Prisma's behavior.
 - **Prisma 6 is used, not Prisma 7+.** Prisma 7 changes the client generator and requires driver adapters; upgrading is a
@@ -263,4 +264,4 @@ reports readiness; BullMQ reuses the same Redis (workers and producers use their
 - **Liveness uses `process.uptime()` only**; it does not detect an event loop that is alive but stuck.
 - **Real SIGTERM handling was not exercised on Windows** (Node cannot deliver it); shutdown hooks are covered by tests
   that call `app.close()` and by unit tests of the lifecycle methods.
-- **The CI workflow for this phase has not been run on GitHub.**
+- **GitHub Actions has run the current workflows.** What those runs showed, and the hosted unit-test limits, is in [ci.md](ci.md).

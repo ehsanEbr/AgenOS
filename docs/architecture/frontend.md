@@ -113,9 +113,9 @@ children: [...homeRoutes, ...agentsRoutes, { path: '*', element: <NotFoundPage /
 - **Navigation entries:** `app/layouts/navigation.tsx` lists the product areas. `status: 'available'` entries are links and need a real route;
   `'planned'` entries render disabled with a "Soon" tag. A test fails if an available entry has no route, or a planned one already has a page.
   When a feature lands: add its routes and flip the status.
-- **Authentication later:** insert a pathless route between the shell's children and the feature routes, for example
-  `{ element: <RequireAuth />, children: [...featureRoutes] }` (a component rendering `<Outlet/>` or redirecting, or a `loader` that
-  throws a redirect). Public pages such as sign-in stay outside it. The table's shape does not change. Not implemented yet; the accepted design is in section 13.
+- **Authentication:** a pathless `RequireAuth` route sits in front of the shell (`app/router/routes.tsx`). It renders its outlet only
+  when the session is authenticated, and sends everyone else to `/sign-in`. `/sign-in` and `/sign-up` stay in `PublicLayout`, outside
+  the shell. What the guard does on expiry, sign-out and a `401` is section 13.
 
 ## 4. Design system and themes
 
@@ -323,6 +323,10 @@ DOM structure (the only exceptions assert direction: `-rtl` modifiers, drawer pl
 implementation (no asserting on hook internals or re-render counts). Use `findBy*`/`waitFor` for async UI, not fixed sleeps. Each feature tests: its states
 (loading/empty/error/success), its hooks' retry behavior if it is non-default, and its route. No browser end-to-end framework is used in `apps/web` (ADR-0005); the system-level Playwright tests live in `tests/system` (ADR-0012 D1, section 12).
 
+A test that counts requests after leaving a page and coming back must not rely on the default `staleTime` of 30 seconds: on a slow runner the
+data is stale and a second fetch is correct. Give that client `staleTime: Infinity` (`app/router/project-routes.spec.tsx` does this). Hosted
+timeouts and the CI reporter: [ci.md](ci.md#hosted-unit-tests).
+
 ## 10. Performance and accessibility
 
 - **Code splitting:** route-level via `route.lazy` (verified in the build: `HomePage-*.js` is its own 1.5 kB chunk). Vendor code is split by package family
@@ -355,22 +359,24 @@ Reviewer checklist: public surface only via `index.ts`; no `fetch`/`import.meta.
 
 ## 12. Known limitations
 
-- **No automated test of real layout.** jsdom cannot show layout, painting or font rendering. RTL/dark/responsive behavior was verified once in real Chrome (computed
-  positions, screenshots, keyboard) with a throwaway script outside the repo; there is no browser test in CI yet (ADR-0005; the Linux-only browser job of ADR-0012 is accepted and planned, see section 13). Regressions in visual layout would not be caught automatically.
-- **Only Chrome was used for that check;** Firefox and Safari were not exercised (Ant Design 6 and the CSS used target current evergreen browsers).
-- **Persian translations were written for this phase's few strings** and have not been reviewed by a native-speaking editor; terminology (for example "MCP Gateway") should be reviewed before release. ADR-0012 makes a native-speaker review of the Persian text and RTL layout a release criterion of the Phase 2.4 UI.
+- **jsdom does not show layout, painting or font rendering.** RTL, dark mode and the responsive shell were checked once in real Chrome (computed
+  positions, screenshots, keyboard) with a throwaway script outside the repo. Playwright (Chromium, Linux CI) covers a real cookie across a
+  reload, dialogs, language and direction (section 13, [ci.md](ci.md)). The suite does not compare screenshots and does not run axe, so a
+  purely visual layout change can still pass.
+- **Only Chromium has been used for those checks.** Firefox and Safari have not been exercised (Ant Design 6 and the CSS used target current evergreen browsers).
+- **Persian translations have not had a native-speaker review**, neither the shell's few strings nor the Phase 2.4 screens. Terminology (for example "MCP Gateway") should be reviewed before release. ADR-0012 makes that review a release criterion of the Phase 2.4 UI.
 - **No webfont is bundled:** Persian uses the first installed of Vazirmatn/Segoe UI/Tahoma/Noto Sans Arabic. Rendering therefore differs by operating system until a font is shipped.
 - **Dictionaries are bundled** into the main chunk (small today, not measured separately). Lazy-loading per-namespace dictionaries will be needed when feature text grows.
-- **Authentication, authorization guards, forms and tables are conventions only**; nothing in the repo implements them yet. The conventions have not been exercised by a real feature; ADR-0012 (section 13) is the accepted design for their first use.
+- **Sign-in, organization and project screens exercise the form, table and guard conventions** (section 13).
 - **Directional icons and RTL date/number formatting** are documented rules; no feature uses them yet, so they are untested.
 - **The initial bundle (~430 kB gzipped) is dominated by Ant Design**; no budget or analysis tooling is wired into CI.
 - **Contrast of the custom palette** (indigo primary, status colors) was chosen for accessibility but not measured with a tool.
 
 ## 13. Accepted design for the first real feature: sign-in, organizations, projects ([ADR-0012](../adr/0012-phase-2-4-web-ui-foundations.md))
 
-**Not implemented yet.** Everything here is an accepted decision of ADR-0012 for Phase 2.4, delivered step by step with a review after each;
-sections 1 to 12 describe what exists. Rules marked **[planned]** are not enforced by lint or a test until their step lands. The ADR holds the
-reasons, the evidence and the full session contract.
+**Implemented on `main`** (feature `3bb1bef`; the later commits through `686fa9a` change test limits and one cache in a unit test, not the UI).
+The subsections below are that code. Sections 1 to 12 are the conventions it follows. The ADR holds the reasons, the evidence and the full
+session contract. Still open, and recorded there: no Content-Security-Policy, and no native-speaker review of the Persian text.
 
 **Routes and organization context.** The organization id in the path is the source of truth for organization-scoped pages.
 

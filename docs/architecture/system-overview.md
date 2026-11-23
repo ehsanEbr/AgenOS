@@ -33,6 +33,10 @@ flowchart LR
   "enqueued in Redis" is the transactional outbox, a later phase.)
 - **Authentication is the default.** Every API route requires a session except health, registration and sign-in; sessions live in
   PostgreSQL (Redis only counts rate-limit attempts, and sign-in fails closed without it). See [backend.md](backend.md#12-authentication-and-the-caller-phase-21).
+- **The web app signs people in and opens organizations and projects.** `/sign-in` and `/sign-up` are public. Everything else waits for a
+  session. `/projects` only redirects: to the last-used organization when that id is still in the caller's list, otherwise to a chooser or
+  to "create your first organization". Project pages live under `/organizations/:organizationId/projects`. The id in the URL is a selector;
+  the API still decides access. Walkthrough: [development.md](development.md#open-the-web-app). Behavior: [frontend.md](frontend.md) section 13.
 - **Separate processes:** `web`, `api`, `worker` and `migrate` are four independent executables; PostgreSQL and Redis are the two
   infrastructure services. The API and the worker never call each other: they meet only through Redis (and the shared contracts).
 - Today the only job is the diagnostic `system.ping`; the API does not enqueue anything yet. The producer side (`QueueProducer`) is
